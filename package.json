@@ -13,6 +13,7 @@
     "dev:renderer": "vite --config src/renderer/vite.config.ts",
     "dev:electron": "electron .",
     "dev": "concurrently --kill-others \"npm run dev:main\" \"npm run dev:renderer\" \"electron .\"",
+    "test:e2e": "electron scripts/e2e-like-comment.cjs",
     "start": "electron ."
   },
   "dependencies": {

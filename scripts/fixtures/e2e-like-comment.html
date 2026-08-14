@@ -1,0 +1,46 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>TikTok action fixture</title>
+    <style>
+      body { margin: 0; background: #111; color: #fff; font-family: Arial, sans-serif; }
+      main { display: grid; grid-template-columns: 1fr 90px; width: 520px; height: 360px; }
+      video, .video-box { width: 410px; height: 300px; background: #222; display: block; }
+      .actions { display: flex; align-items: center; justify-content: center; }
+      button { width: 54px; height: 54px; border-radius: 999px; border: 0; background: #333; color: white; }
+      button[aria-pressed="true"] svg { fill: rgb(254, 44, 85); color: rgb(254, 44, 85); }
+      svg { width: 28px; height: 28px; fill: rgb(255, 255, 255); }
+      .comment-row { display: flex; gap: 8px; padding: 12px; }
+      textarea { width: 330px; height: 44px; }
+    </style>
+  </head>
+  <body>
+    <main data-e2e="video-detail-container">
+      <div class="video-box" data-e2e="browse-video"></div>
+      <div class="actions">
+        <button id="like-button" aria-label="Like" aria-pressed="false">
+          <span data-e2e="browse-like-icon">
+            <svg viewBox="0 0 24 24"><path d="M12 21s-8-4.7-8-11a5 5 0 0 1 8-3 5 5 0 0 1 8 3c0 6.3-8 11-8 11z"></path></svg>
+          </span>
+        </button>
+      </div>
+    </main>
+    <div class="comment-row">
+      <textarea data-e2e="comment-input" placeholder="Add comment"></textarea>
+      <button id="post-comment" data-e2e="comment-post">Post</button>
+    </div>
+    <script>
+      window.__likeClicks = 0;
+      window.__postedComment = '';
+      document.getElementById('like-button').addEventListener('click', event => {
+        window.__likeClicks += 1;
+        const button = event.currentTarget;
+        button.setAttribute('aria-pressed', button.getAttribute('aria-pressed') === 'true' ? 'false' : 'true');
+      });
+      document.getElementById('post-comment').addEventListener('click', () => {
+        window.__postedComment = document.querySelector('[data-e2e="comment-input"]').value;
+      });
+    </script>
+  </body>
+</html>

@@ -1810,24 +1810,6 @@ async function executeTaskForAccount(
                   return el;
                 };
 
-                const triggerDomClick = (el) => {
-                  if (!el) return;
-                  try {
-                    if (typeof el.click === 'function') el.click();
-                    el.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true }));
-                    el.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, cancelable: true }));
-                    el.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
-                  } catch (e) {}
-                };
-
-                const triggerDomDblClick = (el) => {
-                  if (!el) return;
-                  try {
-                    triggerDomClick(el);
-                    el.dispatchEvent(new MouseEvent('dblclick', { bubbles: true, cancelable: true }));
-                  } catch (e) {}
-                };
-
                 const selectors = [
                   { type: 'xpath', value: '//*[@data-e2e="browse-like-icon"]/ancestor::button[@aria-pressed="false"]' },
                   { type: 'xpath', value: '//main //*[@data-e2e="like-icon"]/ancestor::button[@aria-pressed="false"]' },
@@ -1870,11 +1852,6 @@ async function executeTaskForAccount(
                   if (!rect.width || !rect.height) continue;
 
                   const alreadyLiked = isLikedControl(target) || isLikedControl(node);
-                  if (!alreadyLiked) {
-                    triggerDomClick(target);
-                    if (node !== target) triggerDomClick(node);
-                  }
-
                   return {
                     found: true,
                     alreadyLiked,
@@ -1890,7 +1867,6 @@ async function executeTaskForAccount(
                 if (video) {
                   const rect = video.getBoundingClientRect();
                   if (rect.width > 0 && rect.height > 0) {
-                    triggerDomDblClick(video);
                     return {
                       found: true,
                       alreadyLiked: false,
@@ -1920,21 +1896,32 @@ async function executeTaskForAccount(
             continue;
           }
 
+          const zoomFactor = win.webContents.getZoomFactor();
+          const clickX = Math.round(likeTarget.x * zoomFactor);
+          const clickY = Math.round(likeTarget.y * zoomFactor);
+
           if (likeTarget.target === 'video-dblclick') {
-            win.webContents.sendInputEvent({ type: 'mouseDown', x: likeTarget.x, y: likeTarget.y, button: 'left', clickCount: 1 });
-            win.webContents.sendInputEvent({ type: 'mouseUp', x: likeTarget.x, y: likeTarget.y, button: 'left', clickCount: 1 });
+            win.webContents.sendInputEvent({ type: 'mouseDown', x: clickX, y: clickY, button: 'left', clickCount: 1 });
+            win.webContents.sendInputEvent({ type: 'mouseUp', x: clickX, y: clickY, button: 'left', clickCount: 1 });
             await new Promise(res => setTimeout(res, 80));
-            win.webContents.sendInputEvent({ type: 'mouseDown', x: likeTarget.x, y: likeTarget.y, button: 'left', clickCount: 2 });
-            win.webContents.sendInputEvent({ type: 'mouseUp', x: likeTarget.x, y: likeTarget.y, button: 'left', clickCount: 2 });
+            win.webContents.sendInputEvent({ type: 'mouseDown', x: clickX, y: clickY, button: 'left', clickCount: 2 });
+            win.webContents.sendInputEvent({ type: 'mouseUp', x: clickX, y: clickY, button: 'left', clickCount: 2 });
           } else {
-            win.webContents.sendInputEvent({ type: 'mouseDown', x: likeTarget.x, y: likeTarget.y, button: 'left', clickCount: 1 });
-            win.webContents.sendInputEvent({ type: 'mouseUp', x: likeTarget.x, y: likeTarget.y, button: 'left', clickCount: 1 });
+            win.webContents.sendInputEvent({ type: 'mouseDown', x: clickX, y: clickY, button: 'left', clickCount: 1 });
+            win.webContents.sendInputEvent({ type: 'mouseUp', x: clickX, y: clickY, button: 'left', clickCount: 1 });
           }
 
-          await new Promise(res => setTimeout(res, 900));
-          const likeStateAfterClick = await readVideoLikeState();
-          if (likeStateAfterClick?.liked) {
-            likeResult = { attempted: true, verified: true, alreadyLiked: false, target: likeTarget.target, attempt };
+          let likeStateAfterClick: any = { liked: false };
+          for (const waitMs of [700, 900, 1200]) {
+            await new Promise(res => setTimeout(res, waitMs));
+            likeStateAfterClick = await readVideoLikeState();
+            if (likeStateAfterClick?.liked) {
+              likeResult = { attempted: true, verified: true, alreadyLiked: false, target: likeTarget.target, attempt };
+              break;
+            }
+          }
+
+          if (likeResult?.verified) {
             break;
           }
 
