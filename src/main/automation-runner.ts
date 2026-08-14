@@ -21,6 +21,7 @@ const TILED_SEEDING_MIN_HEIGHT = 300;
 const TIKTOK_SEEDING_ZOOM = 0.52;
 const TIKTOK_SURFACE_READY_TIMEOUT_MS = 25000;
 const TIKTOK_SURFACE_READY_POLL_MS = 600;
+const TIKTOK_PAGE_LOAD_TIMEOUT_MS = 30000;
 const SEEDING_POST_ACTION_STABILIZE_MS = 12000;
 const LIVESTREAM_INITIAL_COMMENT_DELAY_MS = 15000;
 
@@ -32,6 +33,7 @@ type AccountSessionUpdate = {
 };
 
 let seedingInteractionQueue = Promise.resolve();
+let sessionPreparationQueue = Promise.resolve();
 
 async function runSeedingInteraction<T>(task: () => Promise<T>): Promise<T> {
   const previous = seedingInteractionQueue;
@@ -124,6 +126,12 @@ function isTikTokCookie(cookie: Electron.Cookie): boolean {
          domain === '.tiktok.com' ||
          domain.endsWith('.tiktok.com') ||
          domain.includes('tiktok.com');
+}
+
+function hasTikTokSessionCookie(cookies: Electron.Cookie[]): boolean {
+  return cookies
+    .filter(isTikTokCookie)
+    .some(cookie => cookie.name === 'sessionid' || cookie.name === 'sessionid_ss' || cookie.name === 'sid_tt');
 }
 
 function serializeCookieString(cookies: Electron.Cookie[]): string {
@@ -315,7 +323,8 @@ async function configureSessionProxyAndCookies(
   customSession: Electron.Session,
   cookieStr?: string,
   proxyStr?: string,
-  proxyType: string = 'http'
+  proxyType: string = 'http',
+  options: { skipCookieInjectionIfSessionExists?: boolean } = {}
 ) {
   if (proxyStr && proxyStr.trim().length > 0) {
     try {
@@ -341,6 +350,14 @@ async function configureSessionProxyAndCookies(
   }
 
   if (hasValidTikTokCookieString(cookieStr)) {
+    const existingCookies = await customSession.cookies.get({}).catch(() => []);
+    const hasExistingSession = hasTikTokSessionCookie(existingCookies);
+
+    if (options.skipCookieInjectionIfSessionExists && hasExistingSession) {
+      console.log('[Cookie] Session cookie already exists. Skipped reinjecting cookies for seeding.');
+      return;
+    }
+
     const pairs = cookieStr.split(';').map(p => p.trim()).filter(p => p.length > 0);
     let injectedCount = 0;
     let skippedCount = 0;
@@ -395,15 +412,137 @@ async function configureSessionProxyAndCookies(
       }
     }
 
-    const hasInjectedSession = (await customSession.cookies.get({ domain: '.tiktok.com' })).some(
-      c => c.name === 'sessionid' || c.name === 'sessionid_ss' || c.name === 'sid_tt'
-    );
+    const hasInjectedSession = hasTikTokSessionCookie(await customSession.cookies.get({}));
 
     if (hasInjectedSession) {
       console.log(`[Cookie] Injected ${injectedCount}/${pairs.length} cookie keys into session. Skipped ${skippedCount}.`);
     } else {
       console.warn(`[Cookie] Không inject được session cookie TikTok. Injected ${injectedCount}/${pairs.length}, skipped ${skippedCount}.`);
     }
+  }
+}
+
+async function runSessionPreparation<T>(task: () => Promise<T>): Promise<T> {
+  const previous = sessionPreparationQueue;
+  let release!: () => void;
+  sessionPreparationQueue = new Promise<void>(resolve => {
+    release = resolve;
+  });
+
+  await previous.catch(() => undefined);
+  try {
+    return await task();
+  } finally {
+    release();
+  }
+}
+
+function getCanonicalTikTokUrl(rawUrl: string): string {
+  try {
+    const parsed = new URL(rawUrl);
+    if (parsed.hostname.endsWith('tiktok.com') && parsed.pathname) {
+      return `${parsed.origin}${parsed.pathname}`;
+    }
+  } catch (_) {}
+  return rawUrl;
+}
+
+async function getTikTokPageSnapshot(win: BrowserWindow): Promise<{
+  isBlank: boolean;
+  url?: string;
+  title?: string;
+  readyState?: string;
+  bodyHtmlLength?: number;
+  bodyTextLength?: number;
+  markerCount?: number;
+  error?: string;
+}> {
+  return win.webContents.executeJavaScript(`
+    (() => {
+      try {
+        const bodyText = (document.body?.innerText || '').trim();
+        const bodyHtmlLength = document.body?.innerHTML?.length || 0;
+        const markerCount = document.querySelectorAll('video, button, iframe, input, textarea, [data-e2e]').length;
+        return {
+          isBlank: bodyText.length === 0 && bodyHtmlLength < 1000 && markerCount === 0,
+          url: location.href,
+          title: document.title,
+          readyState: document.readyState,
+          bodyHtmlLength,
+          bodyTextLength: bodyText.length,
+          markerCount
+        };
+      } catch (e) {
+        return { isBlank: false, error: String(e) };
+      }
+    })();
+  `).catch((err: any) => ({ isBlank: false, error: err?.message || String(err) }));
+}
+
+async function clearTikTokRenderCache(customSession: Electron.Session): Promise<void> {
+  await customSession.clearCache().catch(() => {});
+  await customSession.clearStorageData({
+    origin: 'https://www.tiktok.com',
+    storages: ['serviceworkers', 'cachestorage'] as any,
+  } as any).catch(() => {});
+}
+
+async function loadTikTokUrlForSeeding(
+  win: BrowserWindow,
+  customSession: Electron.Session,
+  url: string,
+  acc: { id: string; username: string },
+  onLog: (log: Omit<TaskLogItem, 'id' | 'timestamp'>) => void
+): Promise<void> {
+  let timeoutHandle: NodeJS.Timeout | undefined;
+
+  const loadPromise = win.loadURL(url).catch((err: any) => {
+    const errMsg = err?.message || String(err);
+    if (errMsg.includes('ERR_ABORTED') || err?.code === 'ERR_ABORTED' || err?.errno === -3) {
+      return;
+    }
+    throw err;
+  });
+
+  const timeoutPromise = new Promise<void>((_resolve, reject) => {
+    timeoutHandle = setTimeout(() => {
+      try {
+        if (!win.isDestroyed()) win.webContents.stop();
+      } catch (_) {}
+      reject(new Error(`TikTok load qua ${Math.round(TIKTOK_PAGE_LOAD_TIMEOUT_MS / 1000)}s van chua xong.`));
+    }, TIKTOK_PAGE_LOAD_TIMEOUT_MS);
+  });
+
+  try {
+    await Promise.race([loadPromise, timeoutPromise]);
+  } finally {
+    if (timeoutHandle) clearTimeout(timeoutHandle);
+  }
+
+  await new Promise(res => setTimeout(res, 1500));
+  let snapshot = await getTikTokPageSnapshot(win);
+  if (!snapshot.isBlank) return;
+
+  onLog({
+    accountId: acc.id,
+    accountUsername: acc.username,
+    level: 'warning',
+    message: `[Load] TikTok dang trang/trong cho @${acc.username}. Clear cache/service worker va reload lai... url=${snapshot.url || 'unknown'}, bodyHtml=${snapshot.bodyHtmlLength ?? 'unknown'}`,
+  });
+
+  await clearTikTokRenderCache(customSession);
+  const retryUrl = getCanonicalTikTokUrl(url);
+  await win.loadURL(retryUrl).catch((err: any) => {
+    const errMsg = err?.message || String(err);
+    if (!errMsg.includes('ERR_ABORTED') && err?.code !== 'ERR_ABORTED' && err?.errno !== -3) {
+      throw err;
+    }
+  });
+  await new Promise(res => setTimeout(res, 2500));
+
+  snapshot = await getTikTokPageSnapshot(win);
+  if (snapshot.isBlank) {
+    throw new Error(`TikTok van trang/trong sau reload cho @${acc.username}: url=${snapshot.url || 'unknown'}, readyState=${snapshot.readyState || 'unknown'}, bodyHtml=${snapshot.bodyHtmlLength ?? 'unknown'}`);
   }
 }
 
@@ -1070,7 +1209,11 @@ export function setupAutomationIPC(
         'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
       );
 
-      await configureSessionProxyAndCookies(customSession, cookie, proxy);
+      await runSessionPreparation(() =>
+        configureSessionProxyAndCookies(customSession, cookie, proxy, 'http', {
+          skipCookieInjectionIfSessionExists: true,
+        })
+      );
 
       const win = new BrowserWindow({
         ...getTiledLoginWindowBounds(loginWindows.size),
@@ -1080,6 +1223,7 @@ export function setupAutomationIPC(
           session: customSession,
           nodeIntegration: false,
           contextIsolation: true,
+          backgroundThrottling: false,
         },
       });
 
@@ -1188,7 +1332,11 @@ export function setupAutomationIPC(
           'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
         );
 
-        await configureSessionProxyAndCookies(customSession, acc.cookie, acc.proxy, acc.proxyType);
+        await runSessionPreparation(() =>
+          configureSessionProxyAndCookies(customSession, acc.cookie, acc.proxy, acc.proxyType, {
+            skipCookieInjectionIfSessionExists: true,
+          })
+        );
 
         const win = new BrowserWindow({
           ...getTiledLoginWindowBounds(loginWindows.size),
@@ -1198,6 +1346,7 @@ export function setupAutomationIPC(
             session: customSession,
             nodeIntegration: false,
             contextIsolation: true,
+            backgroundThrottling: false,
           },
         });
 
@@ -1389,10 +1538,14 @@ async function executeTaskForAccount(
     'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
   );
 
-  await configureSessionProxyAndCookies(customSession, acc.cookie, acc.proxy, acc.proxyType);
+  await runSessionPreparation(() =>
+    configureSessionProxyAndCookies(customSession, acc.cookie, acc.proxy, acc.proxyType, {
+      skipCookieInjectionIfSessionExists: true,
+    })
+  );
 
   const cookies = await customSession.cookies.get({});
-  const hasSession = cookies.some(c => c.name.includes('sessionid') || c.name.includes('sid_tt') || c.name.includes('uid_tt'));
+  const hasSession = hasTikTokSessionCookie(cookies) || cookies.some(c => isTikTokCookie(c) && c.name.includes('uid_tt'));
 
   if (!hasSession) {
     onLog({
@@ -1412,6 +1565,7 @@ async function executeTaskForAccount(
       session: customSession,
       nodeIntegration: false,
       contextIsolation: true,
+      backgroundThrottling: false,
     },
   });
 
@@ -1423,21 +1577,7 @@ async function executeTaskForAccount(
       message: `Đang tải URL trang TikTok: ${config.targetUrl}...`,
     });
 
-    try {
-      await win.loadURL(config.targetUrl);
-    } catch (err: any) {
-      const errMsg = err?.message || String(err);
-      if (errMsg.includes('ERR_ABORTED') || err?.code === 'ERR_ABORTED' || err?.errno === -3) {
-        onLog({
-          accountId: acc.id,
-          accountUsername: acc.username,
-          level: 'info',
-          message: `Đang chờ TikTok hoàn tất tải trang cho @${acc.username} (bỏ qua cảnh báo chuyển hướng ERR_ABORTED)...`,
-        });
-      } else {
-        throw err;
-      }
-    }
+    await loadTikTokUrlForSeeding(win, customSession, config.targetUrl, acc, onLog);
     win.webContents.setZoomFactor(TIKTOK_SEEDING_ZOOM);
     await win.webContents.executeJavaScript(`
       (() => {
