@@ -61,6 +61,36 @@ async function clickLikeOnce(win) {
   await delay(400);
 }
 
+async function getLiveTapTarget(win) {
+  return win.webContents.executeJavaScript(`
+    (() => {
+      const el = document.querySelector('[data-e2e="live-player"], video, canvas, [data-e2e="room-chat-like-btn"]');
+      if (!el) return { found: false };
+      const rect = el.getBoundingClientRect();
+      return {
+        found: rect.width > 0 && rect.height > 0,
+        x: Math.round(rect.left + rect.width * 0.5),
+        y: Math.round(rect.top + rect.height * 0.52),
+        target: el.getAttribute('data-e2e') || el.tagName.toLowerCase()
+      };
+    })();
+  `);
+}
+
+async function clickLiveLikeRepeatedly(win, count) {
+  for (let i = 0; i < count; i++) {
+    const target = await getLiveTapTarget(win);
+    if (!target.found) throw new Error('fixture live like target not found');
+    const zoomFactor = win.webContents.getZoomFactor();
+    const x = Math.round(target.x * zoomFactor);
+    const y = Math.round(target.y * zoomFactor);
+    win.webContents.sendInputEvent({ type: 'mouseMove', x, y });
+    win.webContents.sendInputEvent({ type: 'mouseDown', x, y, button: 'left', clickCount: 1 });
+    win.webContents.sendInputEvent({ type: 'mouseUp', x, y, button: 'left', clickCount: 1 });
+    await delay(120);
+  }
+}
+
 async function runLocalActionFixture() {
   const win = new BrowserWindow({
     width: 640,
@@ -90,6 +120,14 @@ async function runLocalActionFixture() {
   `);
   const posted = await win.webContents.executeJavaScript('window.__postedComment');
   if (posted !== 'E2E comment OK') throw new Error(`comment fixture failed: ${posted}`);
+
+  await clickLiveLikeRepeatedly(win, 6);
+  const liveLikeClicks = await win.webContents.executeJavaScript('window.__liveLikeClicks');
+  const liveScreenTaps = await win.webContents.executeJavaScript('window.__liveScreenTaps');
+  if (liveScreenTaps !== 6 || liveLikeClicks !== 0) {
+    throw new Error(`live screen tap fixture failed: surface=${liveScreenTaps}, button=${liveLikeClicks}`);
+  }
+
   win.destroy();
 }
 

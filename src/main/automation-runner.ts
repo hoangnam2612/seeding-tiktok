@@ -23,6 +23,7 @@ const TIKTOK_SURFACE_READY_TIMEOUT_MS = 25000;
 const TIKTOK_SURFACE_READY_POLL_MS = 600;
 const TIKTOK_PAGE_LOAD_TIMEOUT_MS = 30000;
 const SEEDING_POST_ACTION_STABILIZE_MS = 12000;
+const SEEDING_ACTION_CONCURRENCY = 3;
 const LIVESTREAM_INITIAL_COMMENT_DELAY_MS = 15000;
 
 type AccountStatus = 'authenticated' | 'unauthenticated' | 'active' | 'error' | 'live' | 'die';
@@ -32,21 +33,21 @@ type AccountSessionUpdate = {
   lastUsed: string;
 };
 
-let seedingInteractionQueue = Promise.resolve();
+let activeSeedingInteractions = 0;
+const pendingSeedingInteractions: Array<() => void> = [];
 let sessionPreparationQueue = Promise.resolve();
 
 async function runSeedingInteraction<T>(task: () => Promise<T>): Promise<T> {
-  const previous = seedingInteractionQueue;
-  let release!: () => void;
-  seedingInteractionQueue = new Promise<void>(resolve => {
-    release = resolve;
-  });
-
-  await previous.catch(() => undefined);
+  if (activeSeedingInteractions >= SEEDING_ACTION_CONCURRENCY) {
+    await new Promise<void>(resolve => pendingSeedingInteractions.push(resolve));
+  }
+  activeSeedingInteractions++;
   try {
     return await task();
   } finally {
-    release();
+    activeSeedingInteractions = Math.max(0, activeSeedingInteractions - 1);
+    const next = pendingSeedingInteractions.shift();
+    if (next) next();
   }
 }
 
@@ -183,7 +184,7 @@ async function persistTikTokSessionCookies(
     accountId,
     accountUsername,
     level: 'success',
-    message: `${logPrefix}Đã lưu cookie TikTok mới cho @${accountUsername || accountId}.`,
+    message: `${logPrefix}ÄÃ£ lÆ°u cookie TikTok má»›i cho @${accountUsername || accountId}.`,
   });
 
   return true;
@@ -208,7 +209,7 @@ async function waitForTikTokSurfaceReady(
 
   while (Date.now() < deadline) {
     if (win.isDestroyed()) {
-      return { ready: false, reason: 'Cửa sổ đã đóng.' };
+      return { ready: false, reason: 'Cá»­a sá»• Ä‘Ã£ Ä‘Ã³ng.' };
     }
 
     try {
@@ -243,11 +244,11 @@ async function waitForTikTokSurfaceReady(
                              videoContainers.some(isVisible);
 
             const hasVideoLike = Array.from(document.querySelectorAll(
-              '[data-e2e="like-icon"], [data-e2e="browse-like-icon"], [data-e2e="video-like-icon"], [data-e2e="feed-like"], [data-e2e="search-like-icon"], [data-e2e*="like"], button[aria-label*="like" i], button[aria-label*="thích" i], button[aria-label*="Thích" i], span[aria-label*="like" i], span[aria-label*="thích" i], [class*="LikeContainer"], [class*="ButtonLike"], [class*="ButtonActionItem"]'
+              '[data-e2e="like-icon"], [data-e2e="browse-like-icon"], [data-e2e="video-like-icon"], [data-e2e="feed-like"], [data-e2e="search-like-icon"], [data-e2e*="like"], button[aria-label*="like" i], button[aria-label*="thÃ­ch" i], button[aria-label*="ThÃ­ch" i], span[aria-label*="like" i], span[aria-label*="thÃ­ch" i], [class*="LikeContainer"], [class*="ButtonLike"], [class*="ButtonActionItem"]'
             )).some(isVisible);
 
             const hasVideoComment = Array.from(document.querySelectorAll(
-              '[data-e2e="comment-icon"], [data-e2e="browse-comment-icon"], [data-e2e="comment-input"], [data-e2e="comment-input-area"], button[aria-label*="comment" i], button[aria-label*="bình luận" i], [role="textbox"], textarea'
+              '[data-e2e="comment-icon"], [data-e2e="browse-comment-icon"], [data-e2e="comment-input"], [data-e2e="comment-input-area"], button[aria-label*="comment" i], button[aria-label*="bÃ¬nh luáº­n" i], [role="textbox"], textarea'
             )).some(isVisible);
 
             const hasLiveChat = Array.from(document.querySelectorAll(
@@ -266,7 +267,7 @@ async function waitForTikTokSurfaceReady(
             const bodyText = document.body?.innerText || '';
             const isLoginScreen = bodyText.includes('Log in to TikTok') ||
                                   bodyText.includes('Use phone or email') ||
-                                  bodyText.includes('Đăng nhập');
+                                  bodyText.includes('ÄÄƒng nháº­p');
 
             const readyState = document.readyState;
             const hasVideoSurface = hasVideo || hasVideoLike || hasVideoComment || isVideoUrl;
@@ -311,8 +312,8 @@ async function waitForTikTokSurfaceReady(
     hasLiveChat: lastState?.hasLiveChat,
     hasLiveLike: lastState?.hasLiveLike,
     reason: lastState?.isLoginScreen
-      ? 'Đang ở màn hình đăng nhập.'
-      : lastState?.reason || 'TikTok chưa render đủ UI trong thời gian chờ.',
+      ? 'Äang á»Ÿ mÃ n hÃ¬nh Ä‘Äƒng nháº­p.'
+      : lastState?.reason || 'TikTok chÆ°a render Ä‘á»§ UI trong thá»i gian chá».',
   };
 }
 
@@ -417,7 +418,7 @@ async function configureSessionProxyAndCookies(
     if (hasInjectedSession) {
       console.log(`[Cookie] Injected ${injectedCount}/${pairs.length} cookie keys into session. Skipped ${skippedCount}.`);
     } else {
-      console.warn(`[Cookie] Không inject được session cookie TikTok. Injected ${injectedCount}/${pairs.length}, skipped ${skippedCount}.`);
+      console.warn(`[Cookie] KhÃ´ng inject Ä‘Æ°á»£c session cookie TikTok. Injected ${injectedCount}/${pairs.length}, skipped ${skippedCount}.`);
     }
   }
 }
@@ -546,6 +547,173 @@ async function loadTikTokUrlForSeeding(
   }
 }
 
+async function activateLiveUiForTapping(win: BrowserWindow): Promise<void> {
+  if (win.isDestroyed()) return;
+
+  await win.webContents.executeJavaScript(`
+    (() => {
+      try {
+        const isVisible = (el) => {
+          if (!el) return false;
+          const rect = el.getBoundingClientRect();
+          const style = window.getComputedStyle(el);
+          return rect.width > 0 &&
+                 rect.height > 0 &&
+                 style.visibility !== 'hidden' &&
+                 style.display !== 'none';
+        };
+
+        const input = Array.from(document.querySelectorAll(
+          '[data-e2e="room-chat-input-field"], [data-e2e*="room-chat"], [role="textbox"], div[contenteditable], textarea, input[type="text"]'
+        )).find(isVisible);
+
+        if (input) {
+          input.scrollIntoView({ behavior: 'instant', block: 'center', inline: 'center' });
+          input.click();
+          input.focus?.();
+        }
+      } catch(e) {}
+    })();
+  `).catch(() => undefined);
+
+  await new Promise(res => setTimeout(res, 250));
+
+  if (win.isDestroyed()) return;
+  await win.webContents.executeJavaScript(`
+    (() => {
+      try {
+        const active = document.activeElement;
+        if (active && active.blur) active.blur();
+      } catch(e) {}
+    })();
+  `).catch(() => undefined);
+}
+
+async function getLiveTapPoint(win: BrowserWindow, preferButton = false): Promise<{ x: number; y: number; target?: string } | null> {
+  if (win.isDestroyed()) return null;
+
+  return win.webContents.executeJavaScript(`
+    (() => {
+      try {
+        const preferButton = ${preferButton ? 'true' : 'false'};
+        const isVisible = (el) => {
+          if (!el) return false;
+          const rect = el.getBoundingClientRect();
+          const style = window.getComputedStyle(el);
+          return rect.width > 0 &&
+                 rect.height > 0 &&
+                 style.visibility !== 'hidden' &&
+                 style.display !== 'none';
+        };
+
+        const findRoomLikeButton = () => {
+          const exact = document.querySelector('[data-e2e="room-chat-like-btn"]');
+          if (exact && isVisible(exact)) return exact;
+          return Array.from(document.querySelectorAll('button, [role="button"], [aria-label], [data-e2e]')).find(el => {
+            if (!isVisible(el)) return false;
+            const label = [
+              el.getAttribute('aria-label'),
+              el.getAttribute('data-e2e'),
+              el.getAttribute('title'),
+              el.textContent
+            ].join(' ').toLowerCase();
+            return label.includes('like') ||
+                   label.includes('heart') ||
+                   label.includes('thÃ­ch') ||
+                   label.includes('tap');
+          });
+        };
+
+        if (preferButton) {
+          const button = findRoomLikeButton();
+          if (button) {
+            const rect = button.getBoundingClientRect();
+            return { x: Math.round(rect.left + rect.width / 2), y: Math.round(rect.top + rect.height / 2), target: 'room-like-btn' };
+          }
+        }
+
+        const scoreSurface = (el) => {
+          const rect = el.getBoundingClientRect();
+          const centerBias = Math.abs((rect.left + rect.width / 2) - window.innerWidth * 0.42);
+          return (rect.width * rect.height) - centerBias * 20;
+        };
+
+        const surface = Array.from(document.querySelectorAll(
+          'video, canvas, [data-e2e="live-player"], [data-e2e="live-room"], [data-e2e*="live-player"], [class*="LivePlayer"], [class*="live-player"], [class*="DivLive"], [class*="Player"]'
+        )).filter(isVisible).sort((a, b) => scoreSurface(b) - scoreSurface(a))[0];
+
+        if (surface) {
+          const rect = surface.getBoundingClientRect();
+          return {
+            x: Math.round(rect.left + rect.width * 0.5),
+            y: Math.round(rect.top + rect.height * 0.52),
+            target: surface.tagName?.toLowerCase() === 'video' ? 'live-video' : 'live-surface'
+          };
+        }
+
+        const button = findRoomLikeButton();
+        if (button) {
+          const rect = button.getBoundingClientRect();
+          return { x: Math.round(rect.left + rect.width / 2), y: Math.round(rect.top + rect.height / 2), target: 'room-like-btn' };
+        }
+
+        const width = window.innerWidth || document.documentElement.clientWidth || 800;
+        const height = window.innerHeight || document.documentElement.clientHeight || 600;
+        return { x: Math.round(width * 0.42), y: Math.round(height * 0.5), target: 'screen-fallback' };
+      } catch(e) {
+        return null;
+      }
+    })();
+  `).catch(() => null);
+}
+
+async function tapLiveContinuously(
+  win: BrowserWindow,
+  acc: { id: string; username: string },
+  liveDurationSeconds: number,
+  onLog: (log: Omit<TaskLogItem, 'id' | 'timestamp'>) => void,
+  label = 'live'
+): Promise<number> {
+  await activateLiveUiForTapping(win);
+
+  const endAt = Date.now() + liveDurationSeconds * 1000;
+  let tapCount = 0;
+  const tapTargets: Record<string, number> = {};
+
+  while (Date.now() < endAt && !win.isDestroyed()) {
+    const tapPoint = await getLiveTapPoint(win, tapCount % 4 === 3);
+
+    if (tapPoint && typeof tapPoint.x === 'number' && typeof tapPoint.y === 'number') {
+      const zoomFactor = win.webContents.getZoomFactor();
+      const tapX = Math.max(1, Math.round(tapPoint.x * zoomFactor));
+      const tapY = Math.max(1, Math.round(tapPoint.y * zoomFactor));
+
+      win.webContents.sendInputEvent({ type: 'mouseMove', x: tapX, y: tapY });
+      win.webContents.sendInputEvent({ type: 'mouseDown', x: tapX, y: tapY, button: 'left', clickCount: 1 });
+      win.webContents.sendInputEvent({ type: 'mouseUp', x: tapX, y: tapY, button: 'left', clickCount: 1 });
+      tapTargets[tapPoint.target || 'unknown'] = (tapTargets[tapPoint.target || 'unknown'] || 0) + 1;
+      tapCount++;
+    }
+
+    await new Promise(res => setTimeout(res, 90 + Math.random() * 60));
+  }
+
+  const targetSummary = Object.entries(tapTargets)
+    .map(([target, count]) => `${target}:${count}`)
+    .join(', ');
+
+  onLog({
+    accountId: acc.id,
+    accountUsername: acc.username,
+    level: tapCount > 0 ? 'success' : 'warning',
+    message: tapCount > 0
+      ? `[Live Like:${label}] Tapped live ${tapCount} times in ${liveDurationSeconds}s${targetSummary ? ` (${targetSummary})` : ''}.`
+      : `[Live Like:${label}] Khong tim thay vung live/nut tim de tap cho @${acc.username}.`,
+  });
+
+  return tapCount;
+}
+
 /**
  * Auto-Fill Username & Password on TikTok Login Page
  */
@@ -604,8 +772,8 @@ async function autoFillTikTokLogin(win: BrowserWindow, usernameOrEmail: string, 
                      txt === 'log in' ||
                      txt === 'login' ||
                      txt === 'continue' ||
-                     txt.includes('đăng nhập') ||
-                     txt.includes('tiếp tục');
+                     txt.includes('Ä‘Äƒng nháº­p') ||
+                     txt.includes('tiáº¿p tá»¥c');
             });
 
             if (submitBtn) {
@@ -698,9 +866,9 @@ async function fillSixDigitCodeSingleStrategy(win: BrowserWindow, code: string):
                    txt === 'continue' ||
                    txt === 'next' ||
                    txt === 'submit' ||
-                   txt.includes('xác minh') ||
-                   txt.includes('tiếp tục') ||
-                   txt.includes('kế tiếp');
+                   txt.includes('xÃ¡c minh') ||
+                   txt.includes('tiáº¿p tá»¥c') ||
+                   txt.includes('káº¿ tiáº¿p');
           });
 
           if (submitBtn) {
@@ -767,7 +935,7 @@ async function monitorLoginFlow(
     accountId: acc.id,
     accountUsername: acc.username,
     level: 'info',
-    message: `[Monitor] Đã kích hoạt giám sát luồng đăng nhập cho @${acc.username}...`,
+    message: `[Monitor] ÄÃ£ kÃ­ch hoáº¡t giÃ¡m sÃ¡t luá»“ng Ä‘Äƒng nháº­p cho @${acc.username}...`,
   });
 
   while (Date.now() - startTime < maxMonitorMs) {
@@ -791,7 +959,7 @@ async function monitorLoginFlow(
             // DO NOT match generic a[href*="/@"]
             const hasUserMenu = !!document.querySelector('[data-e2e="profile-icon"]') &&
                                 (!!document.querySelector('ul[class*="UserMenu"]') || !!document.querySelector('[aria-label*="Profile"]'));
-            const hasLogoutBtn = bodyText.includes('Log out') || bodyText.includes('Đăng xuất');
+            const hasLogoutBtn = bodyText.includes('Log out') || bodyText.includes('ÄÄƒng xuáº¥t');
 
             // Captcha / Challenge Indicators
             const hasCaptcha = !!document.querySelector('iframe[src*="captcha"]') ||
@@ -816,7 +984,7 @@ async function monitorLoginFlow(
             // Email Checkpoint: Option Selection Screen vs 6-Digit Code Input Screen
             const isEmailCheckpoint = !hasCaptcha && !is2FA && (
               bodyText.includes("Verify it's really you") ||
-              bodyText.includes("Xác minh đó là bạn")
+              bodyText.includes("XÃ¡c minh Ä‘Ã³ lÃ  báº¡n")
             );
 
             // Check if 6-digit inputs are active on screen for Email OTP
@@ -845,8 +1013,8 @@ async function monitorLoginFlow(
             const hasEmailSignal = lowerText.includes('email') ||
                                    lowerText.includes('mail') ||
                                    lowerText.includes('@') ||
-                                   lowerText.includes('hòm thư') ||
-                                   lowerText.includes('thư điện tử');
+                                   lowerText.includes('hÃ²m thÆ°') ||
+                                   lowerText.includes('thÆ° Ä‘iá»‡n tá»­');
 
             const hasEmailCodePrompt = lowerText.includes('enter code') ||
                                        lowerText.includes('enter the code') ||
@@ -856,18 +1024,18 @@ async function monitorLoginFlow(
                                        lowerText.includes('sent to email') ||
                                        lowerText.includes('sent to your email') ||
                                        lowerText.includes('code sent') ||
-                                       lowerText.includes('mã xác minh') ||
-                                       lowerText.includes('nhập mã') ||
-                                       lowerText.includes('gửi đến email') ||
-                                       lowerText.includes('gửi tới email');
+                                       lowerText.includes('mÃ£ xÃ¡c minh') ||
+                                       lowerText.includes('nháº­p mÃ£') ||
+                                       lowerText.includes('gá»­i Ä‘áº¿n email') ||
+                                       lowerText.includes('gá»­i tá»›i email');
 
             const emailOptionCandidate = Array.from(document.querySelectorAll('button, [role="button"], div, span, p')).find(el => {
               if (!isVisible(el)) return false;
               const txt = (el.innerText || el.textContent || '').toLowerCase();
-              return (txt.includes('email') || txt.includes('@') || txt.includes('hòm thư')) &&
+              return (txt.includes('email') || txt.includes('@') || txt.includes('hÃ²m thÆ°')) &&
                      !txt.includes('enter code') &&
                      !txt.includes('verification code') &&
-                     !txt.includes('nhập mã');
+                     !txt.includes('nháº­p mÃ£');
             });
 
             const resolvedEmailCodeInputScreen = isEmailCodeInputScreen ||
@@ -919,7 +1087,7 @@ async function monitorLoginFlow(
           accountId: acc.id,
           accountUsername: acc.username,
           level: 'success',
-          message: `🎉 ĐĂNG NHẬP THÀNH CÔNG cho @${acc.username}! Session Cookie đã được xác nhận.`,
+          message: `ðŸŽ‰ ÄÄ‚NG NHáº¬P THÃ€NH CÃ”NG cho @${acc.username}! Session Cookie Ä‘Ã£ Ä‘Æ°á»£c xÃ¡c nháº­n.`,
         });
         return { success: true, status: 'authenticated' };
       }
@@ -932,7 +1100,7 @@ async function monitorLoginFlow(
             accountId: acc.id,
             accountUsername: acc.username,
             level: 'warning',
-            message: `⚠️ PHÁT HIỆN CAPTCHA/CHALLENGE cho @${acc.username}! Vui lòng kéo/giải Captcha thủ công trên màn hình Chrome. Đang tiếp tục chờ...`,
+            message: `âš ï¸ PHÃT HIá»†N CAPTCHA/CHALLENGE cho @${acc.username}! Vui lÃ²ng kÃ©o/giáº£i Captcha thá»§ cÃ´ng trÃªn mÃ n hÃ¬nh Chrome. Äang tiáº¿p tá»¥c chá»...`,
           });
         }
         await new Promise(r => setTimeout(r, pollIntervalMs));
@@ -951,7 +1119,7 @@ async function monitorLoginFlow(
               accountId: acc.id,
               accountUsername: acc.username,
               level: 'info',
-              message: `🔑 Đã phát hiện màn hình 2FA! Đã tự động sinh mã TOTP 6 số [ ${totpCode} ]. Đang điền...`,
+              message: `ðŸ”‘ ÄÃ£ phÃ¡t hiá»‡n mÃ n hÃ¬nh 2FA! ÄÃ£ tá»± Ä‘á»™ng sinh mÃ£ TOTP 6 sá»‘ [ ${totpCode} ]. Äang Ä‘iá»n...`,
             });
 
             // Fill TOTP using single safe strategy
@@ -962,7 +1130,7 @@ async function monitorLoginFlow(
             accountId: acc.id,
             accountUsername: acc.username,
             level: 'warning',
-            message: `⚠️ Màn hình 2FA yêu cầu mã Authenticator nhưng tài khoản @${acc.username} chưa cài Khóa 2FA!`,
+            message: `âš ï¸ MÃ n hÃ¬nh 2FA yÃªu cáº§u mÃ£ Authenticator nhÆ°ng tÃ i khoáº£n @${acc.username} chÆ°a cÃ i KhÃ³a 2FA!`,
           });
           hasFilledTotp = true; // Prevent log spam
         }
@@ -976,7 +1144,7 @@ async function monitorLoginFlow(
           accountId: acc.id,
           accountUsername: acc.username,
           level: 'info',
-          message: `📬 Đã thấy màn hình chọn phương thức xác minh Email. Đang bấm chọn Email...`,
+          message: `ðŸ“¬ ÄÃ£ tháº¥y mÃ n hÃ¬nh chá»n phÆ°Æ¡ng thá»©c xÃ¡c minh Email. Äang báº¥m chá»n Email...`,
         });
 
         await win.webContents.executeJavaScript(`
@@ -990,10 +1158,10 @@ async function monitorLoginFlow(
               const emailCard = Array.from(document.querySelectorAll('button, [role="button"], div, span, p')).find(el => {
                 if (!isVisible(el)) return false;
                 const txt = (el.innerText || el.textContent || '').toLowerCase();
-                return (txt.includes('email') || txt.includes('@') || txt.includes('hòm thư')) &&
+                return (txt.includes('email') || txt.includes('@') || txt.includes('hÃ²m thÆ°')) &&
                        !txt.includes('enter code') &&
                        !txt.includes('verification code') &&
-                       !txt.includes('nhập mã');
+                       !txt.includes('nháº­p mÃ£');
               });
               if (emailCard) emailCard.click();
             } catch(e) {}
@@ -1015,7 +1183,7 @@ async function monitorLoginFlow(
             accountId: acc.id,
             accountUsername: acc.username,
             level: 'info',
-            message: `📬 Màn hình nhập mã Email OTP đã sẵn sàng! Đang kết nối ngầm hòm thư ${acc.email} để bóc mã...`,
+            message: `ðŸ“¬ MÃ n hÃ¬nh nháº­p mÃ£ Email OTP Ä‘Ã£ sáºµn sÃ ng! Äang káº¿t ná»‘i ngáº§m hÃ²m thÆ° ${acc.email} Ä‘á»ƒ bÃ³c mÃ£...`,
           });
 
           // Fetch OTP with requestedAt timestamp
@@ -1029,7 +1197,7 @@ async function monitorLoginFlow(
               accountId: acc.id,
               accountUsername: acc.username,
               level: 'success',
-              message: `🎉 Đã đọc được mã OTP TikTok từ hòm thư: [ ${otpRes.otp} ]. Đang tự động điền...`,
+              message: `ðŸŽ‰ ÄÃ£ Ä‘á»c Ä‘Æ°á»£c mÃ£ OTP TikTok tá»« hÃ²m thÆ°: [ ${otpRes.otp} ]. Äang tá»± Ä‘á»™ng Ä‘iá»n...`,
             });
 
             if (!win.isDestroyed()) {
@@ -1041,7 +1209,7 @@ async function monitorLoginFlow(
               accountId: acc.id,
               accountUsername: acc.username,
               level: 'warning',
-              message: `⚠️ Kết quả đọc Email OTP: ${otpRes.message}`,
+              message: `âš ï¸ Káº¿t quáº£ Ä‘á»c Email OTP: ${otpRes.message}`,
             });
           }
         } else {
@@ -1049,7 +1217,7 @@ async function monitorLoginFlow(
             accountId: acc.id,
             accountUsername: acc.username,
             level: 'warning',
-            message: `⚠️ Màn hình xác minh yêu cầu mã OTP Email nhưng tài khoản chưa nhập Email & PassMail!`,
+            message: `âš ï¸ MÃ n hÃ¬nh xÃ¡c minh yÃªu cáº§u mÃ£ OTP Email nhÆ°ng tÃ i khoáº£n chÆ°a nháº­p Email & PassMail!`,
           });
           hasFilledEmailOtp = true; // Prevent log spam
         }
@@ -1094,9 +1262,9 @@ async function monitorLoginFlow(
                        txt.includes('use phone/email') ||
                        txt.includes('use phone or email or username') ||
                        txt.includes('use phone / email / username') ||
-                       txt.includes('sử dụng điện thoại / email / tên người dùng') ||
-                       txt.includes('sử dụng điện thoại') ||
-                       txt.includes('sử dụng email');
+                       txt.includes('sá»­ dá»¥ng Ä‘iá»‡n thoáº¡i / email / tÃªn ngÆ°á»i dÃ¹ng') ||
+                       txt.includes('sá»­ dá»¥ng Ä‘iá»‡n thoáº¡i') ||
+                       txt.includes('sá»­ dá»¥ng email');
                 const rect = el.getBoundingClientRect();
                 return exactMethod || (containsMethod && rect.width <= 650 && rect.height <= 140);
               });
@@ -1112,7 +1280,7 @@ async function monitorLoginFlow(
                                   Array.from(document.querySelectorAll('button, a')).find(el => {
                                     if (!isVisible(el)) return false;
                                     const txt = (el.innerText || el.textContent || '').trim().toLowerCase();
-                                    return txt === 'log in' || txt === 'đăng nhập';
+                                    return txt === 'log in' || txt === 'Ä‘Äƒng nháº­p';
                                   });
               if (topLoginBtn) {
                 topLoginBtn.click();
@@ -1132,7 +1300,7 @@ async function monitorLoginFlow(
             accountId: acc.id,
             accountUsername: acc.username,
             level: 'info',
-            message: `🔑 Phát hiện ô đăng nhập trên TikTok! Đang tự động điền Username & Mật khẩu...`,
+            message: `ðŸ”‘ PhÃ¡t hiá»‡n Ã´ Ä‘Äƒng nháº­p trÃªn TikTok! Äang tá»± Ä‘á»™ng Ä‘iá»n Username & Máº­t kháº©u...`,
           });
           await autoFillTikTokLogin(win, acc.username, acc.password);
         } else if (loginCheck === 'CLICKED_TOP_LOGIN' || loginCheck === 'CLICKED_MODAL_OPTION') {
@@ -1140,7 +1308,7 @@ async function monitorLoginFlow(
             accountId: acc.id,
             accountUsername: acc.username,
             level: 'info',
-            message: `🌐 Tài khoản chưa đăng nhập. Đang tự động bấm nút "Đăng nhập" trên TikTok...`,
+            message: `ðŸŒ TÃ i khoáº£n chÆ°a Ä‘Äƒng nháº­p. Äang tá»± Ä‘á»™ng báº¥m nÃºt "ÄÄƒng nháº­p" trÃªn TikTok...`,
           });
           await new Promise(r => setTimeout(r, 1500));
         }
@@ -1152,7 +1320,7 @@ async function monitorLoginFlow(
           accountId: acc.id,
           accountUsername: acc.username,
           level: 'error',
-          message: `❌ Phát hiện lỗi đăng nhập trên TikTok cho @${acc.username}: Mật khẩu không đúng hoặc tài khoản không tồn tại.`,
+          message: `âŒ PhÃ¡t hiá»‡n lá»—i Ä‘Äƒng nháº­p trÃªn TikTok cho @${acc.username}: Máº­t kháº©u khÃ´ng Ä‘Ãºng hoáº·c tÃ i khoáº£n khÃ´ng tá»“n táº¡i.`,
         });
         return { success: false, status: 'error' };
       }
@@ -1169,7 +1337,7 @@ async function monitorLoginFlow(
     accountId: acc.id,
     accountUsername: acc.username,
     level: 'info',
-    message: `[Monitor] Kết thúc thời gian giám sát 90s cho @${acc.username}.`,
+    message: `[Monitor] Káº¿t thÃºc thá»i gian giÃ¡m sÃ¡t 90s cho @${acc.username}.`,
   });
 
   return { success: false, status: 'timeout' };
@@ -1253,7 +1421,7 @@ export function setupAutomationIPC(
         accountId,
         accountUsername: username,
         level: 'info',
-        message: `🌐 Đã mở Chrome Profile cho @${username || accountId} ${proxy ? '[Proxy Active]' : ''}`,
+        message: `ðŸŒ ÄÃ£ má»Ÿ Chrome Profile cho @${username || accountId} ${proxy ? '[Proxy Active]' : ''}`,
       });
 
       // ALWAYS launch monitorLoginFlow for background status & auto-login checking
@@ -1284,7 +1452,7 @@ export function setupAutomationIPC(
               accountId,
               accountUsername: username,
               level: 'success',
-              message: `✅ Session Cookie đã được xác nhận thành công cho @${username || accountId}!`,
+              message: `âœ… Session Cookie Ä‘Ã£ Ä‘Æ°á»£c xÃ¡c nháº­n thÃ nh cÃ´ng cho @${username || accountId}!`,
             });
           }
         } catch (err: any) {
@@ -1296,7 +1464,7 @@ export function setupAutomationIPC(
     }
   );
 
-  // 2. Open Multi-Thread Account Chromes (Đa Luồng)
+  // 2. Open Multi-Thread Account Chromes (Äa Luá»“ng)
   ipcMain.handle(
     'open-multi-account-chromes',
     async (_event, accountIds: string[], maxThreads: number = 10, accountsData: any[]) => {
@@ -1308,7 +1476,7 @@ export function setupAutomationIPC(
 
       onLog({
         level: 'info',
-        message: `🚀 Bắt đầu khởi chạy ${selectedAccounts.length} cửa sổ Chrome đa luồng (Tối đa ${effectiveMaxThreads} luồng song song)...`,
+        message: `ðŸš€ Báº¯t Ä‘áº§u khá»Ÿi cháº¡y ${selectedAccounts.length} cá»­a sá»• Chrome Ä‘a luá»“ng (Tá»‘i Ä‘a ${effectiveMaxThreads} luá»“ng song song)...`,
       });
 
       const queue = [...selectedAccounts];
@@ -1322,7 +1490,7 @@ export function setupAutomationIPC(
           accountId: acc.id,
           accountUsername: acc.username,
           level: 'info',
-          message: `[Multi-Thread] Mở cửa sổ Chrome cho @${acc.username}...`,
+          message: `[Multi-Thread] Má»Ÿ cá»­a sá»• Chrome cho @${acc.username}...`,
         });
 
         const partition = `persist:tiktok_${acc.id}`;
@@ -1400,14 +1568,14 @@ export function setupAutomationIPC(
                   accountId: acc.id,
                   accountUsername: acc.username,
                   level: 'success',
-                  message: `✅ [Multi-Thread] Session Cookie đã được xác nhận thành công cho @${acc.username}!`,
+                  message: `âœ… [Multi-Thread] Session Cookie Ä‘Ã£ Ä‘Æ°á»£c xÃ¡c nháº­n thÃ nh cÃ´ng cho @${acc.username}!`,
                 });
               } else {
                 onLog({
                   accountId: acc.id,
                   accountUsername: acc.username,
                   level: 'info',
-                  message: `Đã đóng cửa sổ Chrome của @${acc.username}`,
+                  message: `ÄÃ£ Ä‘Ã³ng cá»­a sá»• Chrome cá»§a @${acc.username}`,
                 });
               }
             } catch (err: any) {
@@ -1438,7 +1606,7 @@ export function setupAutomationIPC(
     async (_event, config: SeedingTaskConfig, accounts: { id: string; username: string; cookie?: string; proxy?: string; proxyType?: string }[]) => {
       onLog({
         level: 'info',
-        message: `🚀 Bắt đầu tác vụ Seeding trên ${config.targetType.toUpperCase()}: ${config.targetUrl}`,
+        message: `ðŸš€ Báº¯t Ä‘áº§u tÃ¡c vá»¥ Seeding trÃªn ${config.targetType.toUpperCase()}: ${config.targetUrl}`,
       });
 
       const selectedAccounts = accounts.filter(a => config.accountIds.includes(a.id));
@@ -1446,7 +1614,7 @@ export function setupAutomationIPC(
       if (selectedAccounts.length === 0) {
         onLog({
           level: 'error',
-          message: 'Không có tài khoản nào được chọn để thực hiện tác vụ.',
+          message: 'KhÃ´ng cÃ³ tÃ i khoáº£n nÃ o Ä‘Æ°á»£c chá»n Ä‘á»ƒ thá»±c hiá»‡n tÃ¡c vá»¥.',
         });
         return { success: false, message: 'No accounts selected' };
       }
@@ -1459,7 +1627,7 @@ export function setupAutomationIPC(
 
       onLog({
         level: 'info',
-        message: `🚀 Seeding đa luồng: mở ${effectiveMaxThreads}/${selectedAccounts.length} tài khoản cùng lúc...`,
+        message: `ðŸš€ Seeding Ä‘a luá»“ng: má»Ÿ ${effectiveMaxThreads}/${selectedAccounts.length} tÃ i khoáº£n cÃ¹ng lÃºc...`,
       });
 
       const runSeedingWorker = async (workerIndex: number) => {
@@ -1476,7 +1644,7 @@ export function setupAutomationIPC(
             accountId: acc.id,
             accountUsername: acc.username,
             level: 'info',
-            message: `[Worker ${workerIndex + 1}] [${index + 1}/${selectedAccounts.length}] Đang khởi tạo seeding cho @${acc.username}...`,
+            message: `[Worker ${workerIndex + 1}] [${index + 1}/${selectedAccounts.length}] Äang khá»Ÿi táº¡o seeding cho @${acc.username}...`,
           });
 
           try {
@@ -1486,7 +1654,7 @@ export function setupAutomationIPC(
               accountId: acc.id,
               accountUsername: acc.username,
               level: 'success',
-              message: `[Worker ${workerIndex + 1}] Hoàn thành @${acc.username} (${completedCount}/${selectedAccounts.length}).`,
+              message: `[Worker ${workerIndex + 1}] HoÃ n thÃ nh @${acc.username} (${completedCount}/${selectedAccounts.length}).`,
             });
           } catch (err: any) {
             completedCount++;
@@ -1494,7 +1662,7 @@ export function setupAutomationIPC(
               accountId: acc.id,
               accountUsername: acc.username,
               level: 'error',
-              message: `Lỗi thực hiện tác vụ cho @${acc.username}: ${err.message || err}`,
+              message: `Lá»—i thá»±c hiá»‡n tÃ¡c vá»¥ cho @${acc.username}: ${err.message || err}`,
             });
           }
 
@@ -1514,7 +1682,7 @@ export function setupAutomationIPC(
 
       onLog({
         level: 'success',
-        message: `🎉 Tác vụ Seeding đã hoàn thành toàn bộ ${selectedAccounts.length} tài khoản!`,
+        message: `ðŸŽ‰ TÃ¡c vá»¥ Seeding Ä‘Ã£ hoÃ n thÃ nh toÃ n bá»™ ${selectedAccounts.length} tÃ i khoáº£n!`,
       });
 
       return { success: true };
@@ -1552,7 +1720,7 @@ async function executeTaskForAccount(
       accountId: acc.id,
       accountUsername: acc.username,
       level: 'warning',
-      message: `⚠️ Tài khoản @${acc.username} CHƯA DỰNG SESSION ĐĂNG NHẬP! Bạn hãy gán Cookie hoặc đăng nhập thủ công.`,
+      message: `âš ï¸ TÃ i khoáº£n @${acc.username} CHÆ¯A Dá»°NG SESSION ÄÄ‚NG NHáº¬P! Báº¡n hÃ£y gÃ¡n Cookie hoáº·c Ä‘Äƒng nháº­p thá»§ cÃ´ng.`,
     });
   }
 
@@ -1568,13 +1736,24 @@ async function executeTaskForAccount(
       backgroundThrottling: false,
     },
   });
+  const muteBrowserAudio = config.muteBrowserAudio !== false;
+  win.webContents.setAudioMuted(muteBrowserAudio);
 
   try {
+    if (muteBrowserAudio) {
+      onLog({
+        accountId: acc.id,
+        accountUsername: acc.username,
+        level: 'info',
+        message: `[Audio] Muted browser audio for @${acc.username}.`,
+      });
+    }
+
     onLog({
       accountId: acc.id,
       accountUsername: acc.username,
       level: 'info',
-      message: `Đang tải URL trang TikTok: ${config.targetUrl}...`,
+      message: `Äang táº£i URL trang TikTok: ${config.targetUrl}...`,
     });
 
     await loadTikTokUrlForSeeding(win, customSession, config.targetUrl, acc, onLog);
@@ -1598,7 +1777,7 @@ async function executeTaskForAccount(
       accountId: acc.id,
       accountUsername: acc.username,
       level: 'info',
-      message: `Đang đợi TikTok render ổn định trước khi thao tác...`,
+      message: `Äang Ä‘á»£i TikTok render á»•n Ä‘á»‹nh trÆ°á»›c khi thao tÃ¡c...`,
     });
 
     const surfaceReady = await waitForTikTokSurfaceReady(win, config.targetType);
@@ -1607,16 +1786,14 @@ async function executeTaskForAccount(
       accountUsername: acc.username,
       level: surfaceReady.ready ? 'info' : 'warning',
       message: surfaceReady.ready
-        ? `TikTok đã sẵn sàng: video=${surfaceReady.hasVideo ? 'có' : 'không'}, like=${surfaceReady.hasVideoLike || surfaceReady.hasLiveLike ? 'có' : 'không'}, chat/comment=${surfaceReady.hasVideoComment || surfaceReady.hasLiveChat ? 'có' : 'không'}.`
-        : `TikTok chưa ổn định sau ${Math.round(TIKTOK_SURFACE_READY_TIMEOUT_MS / 1000)}s (${surfaceReady.reason || 'không rõ'}). Trạng thái: readyState=${surfaceReady.readyState || 'unknown'}, video=${surfaceReady.hasVideo ? 'có' : 'không'}, like=${surfaceReady.hasVideoLike || surfaceReady.hasLiveLike ? 'có' : 'không'}, chat/comment=${surfaceReady.hasVideoComment || surfaceReady.hasLiveChat ? 'có' : 'không'}.`,
+        ? `TikTok Ä‘Ã£ sáºµn sÃ ng: video=${surfaceReady.hasVideo ? 'cÃ³' : 'khÃ´ng'}, like=${surfaceReady.hasVideoLike || surfaceReady.hasLiveLike ? 'cÃ³' : 'khÃ´ng'}, chat/comment=${surfaceReady.hasVideoComment || surfaceReady.hasLiveChat ? 'cÃ³' : 'khÃ´ng'}.`
+        : `TikTok chÆ°a á»•n Ä‘á»‹nh sau ${Math.round(TIKTOK_SURFACE_READY_TIMEOUT_MS / 1000)}s (${surfaceReady.reason || 'khÃ´ng rÃµ'}). Tráº¡ng thÃ¡i: readyState=${surfaceReady.readyState || 'unknown'}, video=${surfaceReady.hasVideo ? 'cÃ³' : 'khÃ´ng'}, like=${surfaceReady.hasVideoLike || surfaceReady.hasLiveLike ? 'cÃ³' : 'khÃ´ng'}, chat/comment=${surfaceReady.hasVideoComment || surfaceReady.hasLiveChat ? 'cÃ³' : 'khÃ´ng'}.`,
     });
 
     if (config.targetType === 'video') {
       await runSeedingInteraction(async () => {
         if (!win.isDestroyed()) {
-          win.focus();
-          win.webContents.focus();
-          await new Promise(res => setTimeout(res, 250));
+          await new Promise(res => setTimeout(res, 150));
         }
 
       if (config.likeEnabled) {
@@ -1624,7 +1801,7 @@ async function executeTaskForAccount(
           accountId: acc.id,
           accountUsername: acc.username,
           level: 'info',
-          message: `Đang thực hiện thả tim (Like) video...`,
+          message: `Äang thá»±c hiá»‡n tháº£ tim (Like) video...`,
         });
 
         let likeResult: any = { attempted: false, alreadyLiked: false, target: null };
@@ -1680,13 +1857,13 @@ async function executeTaskForAccount(
                 '[data-e2e*="like"]',
                 'button[data-e2e*="like" i]',
                 'button[aria-label*="like" i]',
-                'button[aria-label*="thích" i]',
-                'button[aria-label*="Thích" i]',
+                'button[aria-label*="thÃ­ch" i]',
+                'button[aria-label*="ThÃ­ch" i]',
                 '[role="button"][aria-label*="like" i]',
-                '[role="button"][aria-label*="thích" i]',
-                '[role="button"][aria-label*="Thích" i]',
+                '[role="button"][aria-label*="thÃ­ch" i]',
+                '[role="button"][aria-label*="ThÃ­ch" i]',
                 'span[aria-label*="like" i]',
-                'span[aria-label*="thích" i]',
+                'span[aria-label*="thÃ­ch" i]',
                 'div[class*="LikeContainer"]',
                 'button[class*="ButtonLike"]',
                 'div[class*="ButtonActionItem"]'
@@ -1723,8 +1900,8 @@ async function executeTaskForAccount(
                 liked: node.getAttribute?.('aria-pressed') === 'true' ||
                        label.includes('liked') ||
                        label.includes('unlike') ||
-                       label.includes('đã thích') ||
-                       label.includes('bỏ thích') ||
+                       label.includes('Ä‘Ã£ thÃ­ch') ||
+                       label.includes('bá» thÃ­ch') ||
                        hasLikedColor(node)
               };
             } catch(e) {
@@ -1794,8 +1971,8 @@ async function executeTaskForAccount(
                   return el?.getAttribute?.('aria-pressed') === 'true' ||
                          label.includes('liked') ||
                          label.includes('unlike') ||
-                         label.includes('đã thích') ||
-                         label.includes('bỏ thích') ||
+                         label.includes('Ä‘Ã£ thÃ­ch') ||
+                         label.includes('bá» thÃ­ch') ||
                          hasLikedColor(el);
                 };
 
@@ -1824,13 +2001,13 @@ async function executeTaskForAccount(
                   '[data-e2e*="like"]',
                   'button[data-e2e*="like" i]',
                   'button[aria-label*="like" i]',
-                  'button[aria-label*="thích" i]',
-                  'button[aria-label*="Thích" i]',
+                  'button[aria-label*="thÃ­ch" i]',
+                  'button[aria-label*="ThÃ­ch" i]',
                   '[role="button"][aria-label*="like" i]',
-                  '[role="button"][aria-label*="thích" i]',
-                  '[role="button"][aria-label*="Thích" i]',
+                  '[role="button"][aria-label*="thÃ­ch" i]',
+                  '[role="button"][aria-label*="ThÃ­ch" i]',
                   'span[aria-label*="like" i]',
-                  'span[aria-label*="thích" i]',
+                  'span[aria-label*="thÃ­ch" i]',
                   'div[class*="LikeContainer"]',
                   'button[class*="ButtonLike"]',
                   'div[class*="ButtonActionItem"]'
@@ -1934,7 +2111,7 @@ async function executeTaskForAccount(
             accountId: acc.id,
             accountUsername: acc.username,
             level: 'info',
-            message: `❤️ Video đã được thả tim sẵn, bỏ qua để tránh bấm lại thành bỏ tim.`,
+            message: `â¤ï¸ Video Ä‘Ã£ Ä‘Æ°á»£c tháº£ tim sáºµn, bá» qua Ä‘á»ƒ trÃ¡nh báº¥m láº¡i thÃ nh bá» tim.`,
           });
         } else if (likeResult?.attempted) {
           onLog({
@@ -1942,15 +2119,15 @@ async function executeTaskForAccount(
             accountUsername: acc.username,
             level: likeResult?.verified ? 'success' : 'warning',
             message: likeResult?.verified
-              ? `❤️ Đã xác nhận video được thả tim qua ${likeResult.target}.`
-              : `Đã thử thả tim video qua ${likeResult.target} nhưng chưa thấy icon đổi sang màu tim sau ${likeResult.attempt || 0} lần thử.`,
+              ? `â¤ï¸ ÄÃ£ xÃ¡c nháº­n video Ä‘Æ°á»£c tháº£ tim qua ${likeResult.target}.`
+              : `ÄÃ£ thá»­ tháº£ tim video qua ${likeResult.target} nhÆ°ng chÆ°a tháº¥y icon Ä‘á»•i sang mÃ u tim sau ${likeResult.attempt || 0} láº§n thá»­.`,
           });
         } else {
           onLog({
             accountId: acc.id,
             accountUsername: acc.username,
             level: 'warning',
-            message: `Không tìm thấy nút/vùng video để thả tim cho @${acc.username}.`,
+            message: `KhÃ´ng tÃ¬m tháº¥y nÃºt/vÃ¹ng video Ä‘á»ƒ tháº£ tim cho @${acc.username}.`,
           });
         }
       }
@@ -1962,7 +2139,7 @@ async function executeTaskForAccount(
             accountId: acc.id,
             accountUsername: acc.username,
             level: 'info',
-            message: `Đang tự động gõ bình luận: "${commentText}"...`,
+            message: `Äang tá»± Ä‘á»™ng gÃµ bÃ¬nh luáº­n: "${commentText}"...`,
           });
 
           await new Promise(res => setTimeout(res, 2500));
@@ -2036,7 +2213,7 @@ async function executeTaskForAccount(
               accountId: acc.id,
               accountUsername: acc.username,
               level: 'info',
-              message: `💬 Đã nhập và gửi yêu cầu bình luận video: "${commentText}". TikTok chưa xác nhận bình luận đã hiển thị.`,
+              message: `ðŸ’¬ ÄÃ£ nháº­p vÃ  gá»­i yÃªu cáº§u bÃ¬nh luáº­n video: "${commentText}". TikTok chÆ°a xÃ¡c nháº­n bÃ¬nh luáº­n Ä‘Ã£ hiá»ƒn thá»‹.`,
             });
           }
         }
@@ -2049,25 +2226,28 @@ async function executeTaskForAccount(
         accountId: acc.id,
         accountUsername: acc.username,
         level: 'info',
-        message: `Đang giữ livestream ${liveDurationSeconds}s cho @${acc.username}${config.likeEnabled ? ' và tap live liên tục...' : '...'}`,
+        message: `Äang giá»¯ livestream ${liveDurationSeconds}s cho @${acc.username}${config.likeEnabled ? ' vÃ  tap live liÃªn tá»¥c...' : '...'}`,
       });
+
+      const liveLikeWarmupPromise = config.likeEnabled && config.comments && config.comments.length > 0
+        ? tapLiveContinuously(win, acc, Math.min(8, liveDurationSeconds), onLog, 'warmup')
+        : Promise.resolve(0);
 
       if (config.comments && config.comments.length > 0) {
         onLog({
           accountId: acc.id,
           accountUsername: acc.username,
           level: 'info',
-          message: `⏳ Vừa vào Livestream, đang chờ ${Math.round(LIVESTREAM_INITIAL_COMMENT_DELAY_MS / 1000)}s trước khi bắt đầu bình luận cho @${acc.username}...`,
+          message: `â³ Vá»«a vÃ o Livestream, Ä‘ang chá» ${Math.round(LIVESTREAM_INITIAL_COMMENT_DELAY_MS / 1000)}s trÆ°á»›c khi báº¯t Ä‘áº§u bÃ¬nh luáº­n cho @${acc.username}...`,
         });
         await new Promise(res => setTimeout(res, LIVESTREAM_INITIAL_COMMENT_DELAY_MS));
+        await liveLikeWarmupPromise.catch(() => 0);
         if (win.isDestroyed()) return;
       }
 
       await runSeedingInteraction(async () => {
         if (!win.isDestroyed()) {
-          win.focus();
-          win.webContents.focus();
-          await new Promise(res => setTimeout(res, 250));
+          await new Promise(res => setTimeout(res, 150));
         }
 
       if (config.comments && config.comments.length > 0) {
@@ -2077,7 +2257,7 @@ async function executeTaskForAccount(
             accountId: acc.id,
             accountUsername: acc.username,
             level: 'info',
-            message: `Đang tìm ô bình luận Live để gửi: "${liveCommentText}"...`,
+            message: `Äang tÃ¬m Ã´ bÃ¬nh luáº­n Live Ä‘á»ƒ gá»­i: "${liveCommentText}"...`,
           });
 
           const focusLiveComment = await win.webContents.executeJavaScript(`
@@ -2147,8 +2327,8 @@ async function executeTaskForAccount(
                            label.includes('chat') ||
                            label.includes('message') ||
                            label.includes('say') ||
-                           label.includes('bình luận') ||
-                           label.includes('nhắn') ||
+                           label.includes('bÃ¬nh luáº­n') ||
+                           label.includes('nháº¯n') ||
                            label.includes('write') ||
                            label.includes('input') ||
                            el.tagName === 'TEXTAREA' ||
@@ -2162,14 +2342,14 @@ async function executeTaskForAccount(
                   })[0] || null;
                 };
 
-                clickByText(['comment', 'chat', 'bình luận', 'message']);
+                clickByText(['comment', 'chat', 'bÃ¬nh luáº­n', 'message']);
                 await new Promise(r => setTimeout(r, 500));
 
                 let input = findInput();
                 if (!input) {
                   scrollHorizontally('right');
                   await new Promise(r => setTimeout(r, 500));
-                  clickByText(['comment', 'chat', 'bình luận', 'message']);
+                  clickByText(['comment', 'chat', 'bÃ¬nh luáº­n', 'message']);
                   await new Promise(r => setTimeout(r, 500));
                   input = findInput();
                 }
@@ -2180,7 +2360,7 @@ async function executeTaskForAccount(
                 }
 
                 const totalInputs = document.querySelectorAll('textarea, input, div[contenteditable], [role="textbox"]').length;
-                if (!input) return { success: false, reason: 'Không thấy ô chat/comment Live. Tổng input/textbox trên DOM: ' + totalInputs };
+                if (!input) return { success: false, reason: 'KhÃ´ng tháº¥y Ã´ chat/comment Live. Tá»•ng input/textbox trÃªn DOM: ' + totalInputs };
 
                 input.scrollIntoView({ behavior: 'instant', block: 'center', inline: 'center' });
                 await new Promise(r => setTimeout(r, 250));
@@ -2232,7 +2412,7 @@ async function executeTaskForAccount(
                     inputTextLength: inputText.length
                   };
                 } catch(e) {}
-                return { clicked: false, error: 'Không kiểm tra được nút gửi Live.' };
+                return { clicked: false, error: 'KhÃ´ng kiá»ƒm tra Ä‘Æ°á»£c nÃºt gá»­i Live.' };
               })();
             `);
 
@@ -2241,15 +2421,15 @@ async function executeTaskForAccount(
               accountUsername: acc.username,
               level: liveSendResult?.clicked ? 'info' : 'warning',
               message: liveSendResult?.clicked
-                ? `💬 Đã click nút gửi bình luận Live: "${liveCommentText}". TikTok chưa xác nhận bình luận đã hiển thị.`
-                : `Không click được nút gửi Live cho @${acc.username}. Nút gửi: ${liveSendResult?.sendBtnVisible ? 'có hiện' : 'không hiện'}, trạng thái: ${liveSendResult?.isProbablyDisabled ? 'chưa sẵn sàng' : 'không rõ'}, text trong ô: ${liveSendResult?.inputTextLength ?? 0} ký tự.`,
+                ? `ðŸ’¬ ÄÃ£ click nÃºt gá»­i bÃ¬nh luáº­n Live: "${liveCommentText}". TikTok chÆ°a xÃ¡c nháº­n bÃ¬nh luáº­n Ä‘Ã£ hiá»ƒn thá»‹.`
+                : `KhÃ´ng click Ä‘Æ°á»£c nÃºt gá»­i Live cho @${acc.username}. NÃºt gá»­i: ${liveSendResult?.sendBtnVisible ? 'cÃ³ hiá»‡n' : 'khÃ´ng hiá»‡n'}, tráº¡ng thÃ¡i: ${liveSendResult?.isProbablyDisabled ? 'chÆ°a sáºµn sÃ ng' : 'khÃ´ng rÃµ'}, text trong Ã´: ${liveSendResult?.inputTextLength ?? 0} kÃ½ tá»±.`,
             });
           } else {
             onLog({
               accountId: acc.id,
               accountUsername: acc.username,
               level: 'warning',
-              message: `Không gửi được bình luận Live cho @${acc.username}: ${focusLiveComment?.reason || 'không tìm thấy ô bình luận'}`,
+              message: `KhÃ´ng gá»­i Ä‘Æ°á»£c bÃ¬nh luáº­n Live cho @${acc.username}: ${focusLiveComment?.reason || 'khÃ´ng tÃ¬m tháº¥y Ã´ bÃ¬nh luáº­n'}`,
             });
           }
         }
@@ -2257,82 +2437,7 @@ async function executeTaskForAccount(
       });
 
       if (config.likeEnabled) {
-        const endAt = Date.now() + liveDurationSeconds * 1000;
-        let tapCount = 0;
-
-        while (Date.now() < endAt && !win.isDestroyed()) {
-          const tapPoint = await win.webContents.executeJavaScript(`
-            (() => {
-              try {
-                const isVisible = (el) => {
-                  const rect = el.getBoundingClientRect();
-                  const style = window.getComputedStyle(el);
-                  return rect.width > 0 && rect.height > 0 && style.visibility !== 'hidden' && style.display !== 'none';
-                };
-
-                // Priority 1: Exact room-chat-like-btn (heart button)
-                const roomLikeBtn = document.querySelector('[data-e2e="room-chat-like-btn"]');
-                if (roomLikeBtn && isVisible(roomLikeBtn)) {
-                  const rect = roomLikeBtn.getBoundingClientRect();
-                  return { x: Math.round(rect.left + rect.width / 2), y: Math.round(rect.top + rect.height / 2), target: 'room-like-btn' };
-                }
-
-                // Priority 2: Generic like button match
-                const video = Array.from(document.querySelectorAll('video')).find(isVisible);
-                const liveLikeButton = Array.from(document.querySelectorAll('button, [role="button"], [aria-label], [data-e2e]')).find(el => {
-                  if (!isVisible(el)) return false;
-                  const label = [
-                    el.getAttribute('aria-label'),
-                    el.getAttribute('data-e2e'),
-                    el.getAttribute('title'),
-                    el.textContent
-                  ].join(' ').toLowerCase();
-                  return label.includes('like') ||
-                         label.includes('heart') ||
-                         label.includes('thích') ||
-                         label.includes('tap');
-                });
-
-                if (liveLikeButton) {
-                  const rect = liveLikeButton.getBoundingClientRect();
-                  return { x: Math.round(rect.left + rect.width / 2), y: Math.round(rect.top + rect.height / 2), target: 'button' };
-                }
-
-                // Priority 3: Fallback double-tap video/screen center
-                const target = video || document.body;
-                const rect = target.getBoundingClientRect();
-                if (!rect.width || !rect.height) return null;
-                return { x: Math.round(rect.left + rect.width * 0.5), y: Math.round(rect.top + rect.height * 0.58), target: video ? 'video' : 'body' };
-              } catch(e) {
-                return null;
-              }
-            })();
-          `);
-
-          if (tapPoint && typeof tapPoint.x === 'number' && typeof tapPoint.y === 'number') {
-            if (tapPoint.target === 'room-like-btn') {
-              win.webContents.sendInputEvent({ type: 'mouseDown', x: tapPoint.x, y: tapPoint.y, button: 'left', clickCount: 1 });
-              win.webContents.sendInputEvent({ type: 'mouseUp', x: tapPoint.x, y: tapPoint.y, button: 'left', clickCount: 1 });
-            } else {
-              win.webContents.sendInputEvent({ type: 'mouseDown', x: tapPoint.x, y: tapPoint.y, button: 'left', clickCount: 1 });
-              win.webContents.sendInputEvent({ type: 'mouseUp', x: tapPoint.x, y: tapPoint.y, button: 'left', clickCount: 1 });
-              await new Promise(res => setTimeout(res, 80));
-              win.webContents.sendInputEvent({ type: 'mouseDown', x: tapPoint.x, y: tapPoint.y, button: 'left', clickCount: 2 });
-              win.webContents.sendInputEvent({ type: 'mouseUp', x: tapPoint.x, y: tapPoint.y, button: 'left', clickCount: 2 });
-            }
-            tapCount++;
-          }
-          await new Promise(res => setTimeout(res, 450 + Math.random() * 450));
-        }
-
-        onLog({
-          accountId: acc.id,
-          accountUsername: acc.username,
-          level: tapCount > 0 ? 'success' : 'warning',
-          message: tapCount > 0
-            ? `Đã tap live ${tapCount} lần trong ${liveDurationSeconds}s.`
-            : `Không tìm thấy vùng live/nút tim để tap cho @${acc.username}.`,
-        });
+        await tapLiveContinuously(win, acc, liveDurationSeconds, onLog, 'main');
       } else {
         await new Promise(res => setTimeout(res, liveDurationSeconds * 1000));
       }

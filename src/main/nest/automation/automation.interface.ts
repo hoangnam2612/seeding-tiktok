@@ -7,6 +7,7 @@ export interface SeedingTaskConfig {
   delaySeconds: number;
   maxThreads?: number;
   liveDurationSeconds?: number;
+  muteBrowserAudio?: boolean;
 }
 
 export interface TaskLogItem {

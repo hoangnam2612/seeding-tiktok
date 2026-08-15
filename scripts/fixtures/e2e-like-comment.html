@@ -13,6 +13,9 @@
       svg { width: 28px; height: 28px; fill: rgb(255, 255, 255); }
       .comment-row { display: flex; gap: 8px; padding: 12px; }
       textarea { width: 330px; height: 44px; }
+      .live-bar { padding: 12px; display: flex; gap: 12px; align-items: center; }
+      .live-surface { width: 180px; height: 96px; background: #181818; border: 1px solid #444; }
+      #live-like-button { width: 48px; height: 48px; background: #222; }
     </style>
   </head>
   <body>
@@ -30,8 +33,16 @@
       <textarea data-e2e="comment-input" placeholder="Add comment"></textarea>
       <button id="post-comment" data-e2e="comment-post">Post</button>
     </div>
+    <div class="live-bar">
+      <div id="live-surface" class="live-surface" data-e2e="live-player"></div>
+      <button id="live-like-button" data-e2e="room-chat-like-btn" aria-label="Tap to like live">
+        <svg viewBox="0 0 24 24"><path d="M12 21s-8-4.7-8-11a5 5 0 0 1 8-3 5 5 0 0 1 8 3c0 6.3-8 11-8 11z"></path></svg>
+      </button>
+    </div>
     <script>
       window.__likeClicks = 0;
+      window.__liveLikeClicks = 0;
+      window.__liveScreenTaps = 0;
       window.__postedComment = '';
       document.getElementById('like-button').addEventListener('click', event => {
         window.__likeClicks += 1;
@@ -40,6 +51,12 @@
       });
       document.getElementById('post-comment').addEventListener('click', () => {
         window.__postedComment = document.querySelector('[data-e2e="comment-input"]').value;
+      });
+      document.getElementById('live-like-button').addEventListener('click', () => {
+        window.__liveLikeClicks += 1;
+      });
+      document.getElementById('live-surface').addEventListener('click', () => {
+        window.__liveScreenTaps += 1;
       });
     </script>
   </body>

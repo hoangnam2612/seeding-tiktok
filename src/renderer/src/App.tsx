@@ -151,6 +151,7 @@ export default function App() {
   const [delaySeconds, setDelaySeconds] = useState<number>(5);
   const [seedingThreads, setSeedingThreads] = useState<number>(5);
   const [liveDurationSeconds, setLiveDurationSeconds] = useState<number>(60);
+  const [muteBrowserAudio, setMuteBrowserAudio] = useState<boolean>(true);
   const [isTaskExecuting, setIsTaskExecuting] = useState<boolean>(false);
 
   // Logs State
@@ -871,6 +872,15 @@ export default function App() {
                     />
                     ❤️ Thả tim (Like video / Tap Live liên tục)
                   </label>
+                  <label className="checkbox-label">
+                    <input
+                      type="checkbox"
+                      className="checkbox-custom"
+                      checked={muteBrowserAudio}
+                      onChange={e => setMuteBrowserAudio(e.target.checked)}
+                    />
+                    Tắt âm thanh trình duyệt worker
+                  </label>
                 </div>
               </div>
 
@@ -954,6 +964,7 @@ export default function App() {
                         delaySeconds,
                         maxThreads: seedingThreadCount,
                         liveDurationSeconds,
+                        muteBrowserAudio,
                       },
                       selectedAccs
                     );
