@@ -17,6 +17,7 @@ declare global {
       ) => Promise<any>;
 
       openMultiAccountChromes: (accountIds: string[], maxThreads: number, accountsData: any[]) => Promise<any>;
+      closeAllBrowserWindows: () => Promise<any>;
       executeSeedingTask: (config: any, accounts: any[]) => Promise<any>;
       platform: string;
     };
@@ -54,6 +55,17 @@ export interface TikTokAccount {
   createdAt: string;
 }
 
+export interface ProxyEntry {
+  id: string;
+  value: string;
+  proxyType: 'none' | 'http' | 'socks5' | 'tmproxy' | 'tinsoft';
+  label?: string;
+  assignedAccountId?: string;
+  status?: 'untested' | 'active' | 'error';
+  lastChecked?: string;
+  createdAt: string;
+}
+
 export interface TaskLogItem {
   id: string;
   timestamp: string;
@@ -67,7 +79,7 @@ export default function App() {
   const NEST_BASE_URL = 'http://127.0.0.1:3000/api';
 
   // Navigation State
-  const [activeTab, setActiveTab] = useState<'accounts' | 'seeding' | 'logs'>('accounts');
+  const [activeTab, setActiveTab] = useState<'accounts' | 'proxies' | 'seeding' | 'logs'>('accounts');
 
   // Server & System Status
   const [nestStatus, setNestStatus] = useState<any>(null);
@@ -78,6 +90,8 @@ export default function App() {
   const [activeCategory, setActiveCategory] = useState<string>('all');
   const [accounts, setAccounts] = useState<TikTokAccount[]>([]);
   const [selectedAccountIds, setSelectedAccountIds] = useState<string[]>([]);
+  const [proxies, setProxies] = useState<ProxyEntry[]>([]);
+  const [selectedProxyIds, setSelectedProxyIds] = useState<string[]>([]);
   
   // Search & Filters
   const [searchQuery, setSearchQuery] = useState<string>('');
@@ -137,6 +151,9 @@ export default function App() {
   const [batchRawText, setBatchRawText] = useState<string>('');
   const [batchCategory, setBatchCategory] = useState<string>('cat_default');
   const [batchProxyType, setBatchProxyType] = useState<TikTokAccount['proxyType']>('http');
+  const [proxyImportText, setProxyImportText] = useState<string>('');
+  const [proxyImportType, setProxyImportType] = useState<ProxyEntry['proxyType']>('http');
+  const [proxyAssignMode, setProxyAssignMode] = useState<'rotate' | 'one-to-one'>('rotate');
 
   // Add Category Form
   const [newCategoryName, setNewCategoryName] = useState<string>('');
@@ -152,6 +169,7 @@ export default function App() {
   const [seedingThreads, setSeedingThreads] = useState<number>(5);
   const [liveDurationSeconds, setLiveDurationSeconds] = useState<number>(60);
   const [muteBrowserAudio, setMuteBrowserAudio] = useState<boolean>(true);
+  const [omocaptchaApiKey, setOmocaptchaApiKey] = useState<string>('');
   const [isTaskExecuting, setIsTaskExecuting] = useState<boolean>(false);
 
   // Logs State
@@ -195,6 +213,18 @@ export default function App() {
     }
   };
 
+  const fetchProxies = async () => {
+    try {
+      const res = await fetch(`${NEST_BASE_URL}/accounts/proxies`);
+      if (res.ok) {
+        const json = await res.json();
+        setProxies(json.data || []);
+      }
+    } catch (err) {
+      console.error('Failed to fetch proxies:', err);
+    }
+  };
+
   const fetchLogs = async () => {
     try {
       const res = await fetch(`${NEST_BASE_URL}/automation/logs`);
@@ -207,10 +237,24 @@ export default function App() {
     }
   };
 
+  const fetchSettings = async () => {
+    try {
+      const res = await fetch(`${NEST_BASE_URL}/settings`);
+      if (res.ok) {
+        const json = await res.json();
+        setOmocaptchaApiKey(json.data?.omocaptchaApiKey || '');
+      }
+    } catch (err) {
+      console.error('Failed to fetch settings:', err);
+    }
+  };
+
   useEffect(() => {
     fetchNestStatus();
     fetchCategories();
     fetchAccounts();
+    fetchProxies();
+    fetchSettings();
     fetchLogs();
 
     const interval = setInterval(() => {
@@ -366,6 +410,105 @@ export default function App() {
     }
   };
 
+  const handleProxyImport = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!proxyImportText.trim()) return;
+
+    try {
+      const res = await fetch(`${NEST_BASE_URL}/accounts/proxies/import`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ rawText: proxyImportText, proxyType: proxyImportType }),
+      });
+      if (res.ok) {
+        const json = await res.json();
+        const data = json.data || {};
+        alert(`Đã nhập ${data.addedCount || 0} proxy. Bỏ qua ${data.skippedCount || 0} dòng.`);
+        setProxyImportText('');
+        fetchProxies();
+      }
+    } catch (err) {
+      alert('Lỗi nhập proxy');
+    }
+  };
+
+  const handleSaveOmocaptchaKey = async () => {
+    try {
+      const res = await fetch(`${NEST_BASE_URL}/settings`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ omocaptchaApiKey }),
+      });
+      if (res.ok) {
+        alert('Đã lưu OmoCaptcha API key.');
+      }
+    } catch (err) {
+      alert('Lỗi lưu OmoCaptcha API key');
+    }
+  };
+
+  const handleAssignSelectedProxies = async () => {
+    if (selectedAccountIds.length === 0) {
+      alert('Vui lòng chọn tài khoản ở tab Accounts trước.');
+      return;
+    }
+    if (selectedProxyIds.length === 0) {
+      alert('Vui lòng chọn proxy để gán.');
+      return;
+    }
+
+    try {
+      const res = await fetch(`${NEST_BASE_URL}/accounts/proxies/assign`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          accountIds: selectedAccountIds,
+          proxyIds: selectedProxyIds,
+          mode: proxyAssignMode,
+        }),
+      });
+      const json = await res.json();
+      alert(`Đã gán proxy cho ${json.updatedCount || 0} tài khoản.`);
+      fetchAccounts();
+      fetchProxies();
+    } catch (err) {
+      alert('Lỗi gán proxy');
+    }
+  };
+
+  const handleClearSelectedAccountProxies = async () => {
+    if (selectedAccountIds.length === 0) {
+      alert('Vui lòng chọn tài khoản cần bỏ proxy.');
+      return;
+    }
+    if (!confirm(`Bỏ proxy khỏi ${selectedAccountIds.length} tài khoản đã chọn?`)) return;
+
+    try {
+      const res = await fetch(`${NEST_BASE_URL}/accounts/proxies/clear-accounts`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ accountIds: selectedAccountIds }),
+      });
+      const json = await res.json();
+      alert(`Đã bỏ proxy khỏi ${json.updatedCount || 0} tài khoản.`);
+      fetchAccounts();
+      fetchProxies();
+    } catch (err) {
+      alert('Lỗi bỏ proxy');
+    }
+  };
+
+  const handleDeleteProxy = async (id: string) => {
+    if (!confirm('Xóa proxy này khỏi kho proxy?')) return;
+    try {
+      await fetch(`${NEST_BASE_URL}/accounts/proxies/${id}`, { method: 'DELETE' });
+      setSelectedProxyIds(selectedProxyIds.filter(proxyId => proxyId !== id));
+      fetchAccounts();
+      fetchProxies();
+    } catch (err) {
+      alert('Lỗi xóa proxy');
+    }
+  };
 
   const handleDeleteAccount = async (id: string) => {
     if (!confirm('Bạn có chắc chắn muốn xóa tài khoản này?')) return;
@@ -462,6 +605,16 @@ export default function App() {
     }
   };
 
+  const handleCloseAllBrowserWindows = async () => {
+    if (!window.electronAPI?.closeAllBrowserWindows) {
+      alert('Chức năng đóng trình duyệt yêu cầu ứng dụng Electron Desktop');
+      return;
+    }
+
+    const result = await window.electronAPI.closeAllBrowserWindows();
+    alert(`Đã đóng ${result?.closedCount || 0} trình duyệt.`);
+  };
+
   const toggleSelectAccount = (id: string) => {
     if (selectedAccountIds.includes(id)) {
       setSelectedAccountIds(selectedAccountIds.filter(i => i !== id));
@@ -475,6 +628,22 @@ export default function App() {
       setSelectedAccountIds([]);
     } else {
       setSelectedAccountIds(filteredAccs.map(a => a.id));
+    }
+  };
+
+  const toggleSelectProxy = (id: string) => {
+    if (selectedProxyIds.includes(id)) {
+      setSelectedProxyIds(selectedProxyIds.filter(proxyId => proxyId !== id));
+    } else {
+      setSelectedProxyIds([...selectedProxyIds, id]);
+    }
+  };
+
+  const toggleSelectAllProxies = () => {
+    if (selectedProxyIds.length === proxies.length) {
+      setSelectedProxyIds([]);
+    } else {
+      setSelectedProxyIds(proxies.map(proxy => proxy.id));
     }
   };
 
@@ -518,6 +687,12 @@ export default function App() {
             onClick={() => setActiveTab('accounts')}
           >
             <span>📋</span> Quản Lý Tài Khoản Đa Luồng ({accounts.length})
+          </button>
+          <button
+            className={`tab-btn ${activeTab === 'proxies' ? 'active' : ''}`}
+            onClick={() => setActiveTab('proxies')}
+          >
+            <span>🌐</span> Quản Lý Proxy ({proxies.length})
           </button>
           <button
             className={`tab-btn ${activeTab === 'seeding' ? 'active' : ''}`}
@@ -596,6 +771,13 @@ export default function App() {
                     onClick={handleOpenMultiChromes}
                   >
                     🌐 Mở Chrome ({selectedAccountIds.length})
+                  </button>
+                  <button
+                    className="btn-secondary"
+                    style={{ color: '#f43f5e' }}
+                    onClick={handleCloseAllBrowserWindows}
+                  >
+                    Đóng tất cả trình duyệt
                   </button>
                   <span style={{ fontSize: '0.78rem', color: 'var(--text-muted)', fontWeight: 700 }}>
                     Luồng
@@ -815,6 +997,161 @@ export default function App() {
           </div>
         )}
 
+        {/* TAB 2: PROXY MANAGEMENT */}
+        {activeTab === 'proxies' && (
+          <div style={{ display: 'grid', gridTemplateColumns: 'minmax(320px, 420px) 1fr', gap: '1.5rem', alignItems: 'start' }}>
+            <div className="card">
+              <div className="card-header">
+                <h3 className="card-title">
+                  <span className="card-icon">🌐</span> Kho Proxy
+                </h3>
+              </div>
+
+              <form onSubmit={handleProxyImport} style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
+                <div className="input-group">
+                  <label className="input-label">Danh sách proxy, mỗi dòng 1 proxy</label>
+                  <textarea
+                    className="textarea-custom"
+                    rows={8}
+                    placeholder={`1.2.3.4:8080\nuser:pass@1.2.3.4:8080\n1.2.3.4:8080:user:pass`}
+                    value={proxyImportText}
+                    onChange={e => setProxyImportText(e.target.value)}
+                  />
+                </div>
+
+                <div className="input-group">
+                  <label className="input-label">Loại proxy mặc định</label>
+                  <select
+                    className="custom-input"
+                    value={proxyImportType}
+                    onChange={e => setProxyImportType(e.target.value as ProxyEntry['proxyType'])}
+                  >
+                    <option value="http">HTTP</option>
+                    <option value="socks5">SOCKS5</option>
+                    <option value="tmproxy">TMProxy</option>
+                    <option value="tinsoft">Tinsoft</option>
+                  </select>
+                </div>
+
+                <button type="submit" className="btn-primary">
+                  Nhập proxy vào kho
+                </button>
+              </form>
+
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.75rem' }}>
+                <div style={{ padding: '0.75rem', border: '1px solid var(--border-color)', borderRadius: '8px' }}>
+                  <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>Proxy trong kho</div>
+                  <div style={{ fontSize: '1.4rem', fontWeight: 800 }}>{proxies.length}</div>
+                </div>
+                <div style={{ padding: '0.75rem', border: '1px solid var(--border-color)', borderRadius: '8px' }}>
+                  <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>Tài khoản đã có proxy</div>
+                  <div style={{ fontSize: '1.4rem', fontWeight: 800 }}>{accounts.filter(acc => !!acc.proxy).length}</div>
+                </div>
+              </div>
+            </div>
+
+            <div className="card">
+              <div className="card-header">
+                <h3 className="card-title">
+                  <span className="card-icon">🔗</span> Gán Proxy Cho Tài Khoản
+                </h3>
+              </div>
+
+              <div className="toolbar">
+                <div className="toolbar-group">
+                  <span style={{ fontSize: '0.85rem', color: 'var(--text-muted)' }}>
+                    Đã chọn {selectedProxyIds.length} proxy và {selectedAccountIds.length} tài khoản
+                  </span>
+                  <select
+                    className="custom-input"
+                    style={{ width: '150px', padding: '0.45rem' }}
+                    value={proxyAssignMode}
+                    onChange={e => setProxyAssignMode(e.target.value as 'rotate' | 'one-to-one')}
+                  >
+                    <option value="rotate">Xoay vòng</option>
+                    <option value="one-to-one">1 proxy / 1 acc</option>
+                  </select>
+                  <button className="btn-primary" onClick={handleAssignSelectedProxies}>
+                    Gán proxy
+                  </button>
+                  <button className="btn-secondary" onClick={handleClearSelectedAccountProxies}>
+                    Bỏ proxy khỏi acc đã chọn
+                  </button>
+                </div>
+              </div>
+
+              <div className="table-wrapper">
+                <table className="account-table">
+                  <thead>
+                    <tr>
+                      <th style={{ width: '40px' }}>
+                        <input
+                          type="checkbox"
+                          className="checkbox-custom"
+                          checked={proxies.length > 0 && selectedProxyIds.length === proxies.length}
+                          onChange={toggleSelectAllProxies}
+                        />
+                      </th>
+                      <th>Proxy</th>
+                      <th>Loại</th>
+                      <th>Đang gán cho</th>
+                      <th style={{ textAlign: 'right' }}>Hành Động</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {proxies.length === 0 ? (
+                      <tr>
+                        <td colSpan={5} style={{ textAlign: 'center', padding: '3rem', color: 'var(--text-muted)' }}>
+                          Chưa có proxy nào. Hãy nhập danh sách proxy ở khung bên trái.
+                        </td>
+                      </tr>
+                    ) : (
+                      proxies.map(proxy => {
+                        const assignedAccounts = accounts.filter(acc => acc.proxy === proxy.value);
+                        return (
+                          <tr key={proxy.id} className={selectedProxyIds.includes(proxy.id) ? 'selected' : ''}>
+                            <td>
+                              <input
+                                type="checkbox"
+                                className="checkbox-custom"
+                                checked={selectedProxyIds.includes(proxy.id)}
+                                onChange={() => toggleSelectProxy(proxy.id)}
+                              />
+                            </td>
+                            <td style={{ fontFamily: 'var(--font-mono)', color: '#38bdf8' }}>{proxy.value}</td>
+                            <td>
+                              <span className="badge-status authenticated">{proxy.proxyType.toUpperCase()}</span>
+                            </td>
+                            <td>
+                              {assignedAccounts.length > 0 ? (
+                                <span>
+                                  {assignedAccounts.slice(0, 2).map(acc => `@${acc.username}`).join(', ')}
+                                  {assignedAccounts.length > 2 ? ` +${assignedAccounts.length - 2}` : ''}
+                                </span>
+                              ) : (
+                                <span style={{ color: 'var(--text-muted)' }}>Chưa gán</span>
+                              )}
+                            </td>
+                            <td style={{ textAlign: 'right' }}>
+                              <button
+                                className="btn-secondary"
+                                style={{ padding: '0.3rem 0.6rem', fontSize: '0.75rem', color: '#f43f5e' }}
+                                onClick={() => handleDeleteProxy(proxy.id)}
+                              >
+                                Xóa
+                              </button>
+                            </td>
+                          </tr>
+                        );
+                      })
+                    )}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+        )}
+
         {/* TAB 2: SEEDING AUTOMATION */}
         {activeTab === 'seeding' && (
           <div style={{ display: 'flex', flexDirection: 'column', gap: '1.5rem' }}>
@@ -881,6 +1218,25 @@ export default function App() {
                     />
                     Tắt âm thanh trình duyệt worker
                   </label>
+                </div>
+              </div>
+
+              <div className="input-group">
+                <label className="input-label">OmoCaptcha API Key (TikTok Web captcha)</label>
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr auto', gap: '0.75rem' }}>
+                  <input
+                    type="password"
+                    className="custom-input"
+                    placeholder="Nhập OmoCaptcha clientKey"
+                    value={omocaptchaApiKey}
+                    onChange={e => setOmocaptchaApiKey(e.target.value)}
+                  />
+                  <button type="button" className="btn-secondary" onClick={handleSaveOmocaptchaKey}>
+                    Lưu key
+                  </button>
+                </div>
+                <div style={{ fontSize: '0.78rem', color: 'var(--text-muted)' }}>
+                  App sẽ tự thử giải TikTok Slider / Rotate / Select Object / 3D Select Object Web captcha bằng OmoCaptcha khi gặp màn hình xác minh.
                 </div>
               </div>
 

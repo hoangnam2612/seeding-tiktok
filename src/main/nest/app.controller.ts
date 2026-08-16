@@ -1,5 +1,5 @@
 import { Controller, Get, Post, Body } from '@nestjs/common';
-import { AppService } from './app.service';
+import { AppService, AppSettings } from './app.service';
 
 @Controller('api')
 export class AppController {
@@ -13,6 +13,16 @@ export class AppController {
   @Get('status')
   getStatus() {
     return this.appService.getStatus();
+  }
+
+  @Get('settings')
+  getSettings() {
+    return { success: true, data: this.appService.getSettings() };
+  }
+
+  @Post('settings')
+  saveSettings(@Body() body: AppSettings) {
+    return { success: true, data: this.appService.saveSettings(body || {}) };
   }
 
   @Post('task')

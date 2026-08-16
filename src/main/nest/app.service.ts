@@ -1,8 +1,45 @@
 import { Injectable } from '@nestjs/common';
 import * as os from 'os';
+import * as fs from 'fs';
+import * as path from 'path';
+
+export interface AppSettings {
+  omocaptchaApiKey?: string;
+}
 
 @Injectable()
 export class AppService {
+  private dataDir = path.join(process.cwd(), 'data');
+  private settingsFilePath = path.join(this.dataDir, 'settings.json');
+
+  private ensureDataDir() {
+    if (!fs.existsSync(this.dataDir)) {
+      fs.mkdirSync(this.dataDir, { recursive: true });
+    }
+  }
+
+  getSettings(): AppSettings {
+    try {
+      this.ensureDataDir();
+      if (!fs.existsSync(this.settingsFilePath)) return {};
+      return JSON.parse(fs.readFileSync(this.settingsFilePath, 'utf-8'));
+    } catch (err) {
+      console.error('[AppService] Failed to read settings:', err);
+      return {};
+    }
+  }
+
+  saveSettings(settings: AppSettings): AppSettings {
+    this.ensureDataDir();
+    const current = this.getSettings();
+    const next: AppSettings = {
+      ...current,
+      omocaptchaApiKey: settings.omocaptchaApiKey?.trim() || '',
+    };
+    fs.writeFileSync(this.settingsFilePath, JSON.stringify(next, null, 2), 'utf-8');
+    return next;
+  }
+
   getHello(): { message: string; timestamp: string } {
     return {
       message: 'Xin chào! NestJS Backend đang chạy mượt mà bên trong Electron Main Process! 🚀',

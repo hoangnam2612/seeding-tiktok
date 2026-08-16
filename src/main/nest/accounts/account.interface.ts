@@ -5,6 +5,17 @@ export interface AccountCategory {
   createdAt: string;
 }
 
+export interface ProxyEntry {
+  id: string;
+  value: string;
+  proxyType: 'none' | 'http' | 'socks5' | 'tmproxy' | 'tinsoft';
+  label?: string;
+  assignedAccountId?: string;
+  status?: 'untested' | 'active' | 'error';
+  lastChecked?: string;
+  createdAt: string;
+}
+
 export interface TikTokAccount {
   id: string;
   username: string;

@@ -16,6 +16,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
 
   openMultiAccountChromes: (accountIds: string[], maxThreads: number, accountsData: any[]) =>
     ipcRenderer.invoke('open-multi-account-chromes', accountIds, maxThreads, accountsData),
+  closeAllBrowserWindows: () => ipcRenderer.invoke('close-all-browser-windows'),
   executeSeedingTask: (config: any, accounts: any[]) =>
     ipcRenderer.invoke('execute-seeding-task', config, accounts),
   platform: process.platform,

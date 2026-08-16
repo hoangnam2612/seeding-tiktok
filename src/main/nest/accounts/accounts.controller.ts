@@ -2,7 +2,7 @@ import { Controller, Get, Post, Put, Delete, Body, Param, Query } from '@nestjs/
 import { AccountsService } from './accounts.service';
 import { MailOtpService } from './mail-otp.service';
 import { generateTotpToken } from './totp.helper';
-import { TikTokAccount } from './account.interface';
+import { ProxyEntry, TikTokAccount } from './account.interface';
 
 
 @Controller('api/accounts')
@@ -27,6 +27,40 @@ export class AccountsController {
   @Delete('categories/:id')
   deleteCategory(@Param('id') id: string) {
     const success = this.accountsService.deleteCategory(id);
+    return { success };
+  }
+
+  // --- PROXY POOL ---
+  @Get('proxies')
+  getProxies() {
+    return { success: true, data: this.accountsService.getAllProxies() };
+  }
+
+  @Post('proxies/import')
+  importProxies(@Body() body: { rawText: string; proxyType?: ProxyEntry['proxyType'] }) {
+    const result = this.accountsService.importProxies(body.rawText || '', body.proxyType || 'http');
+    return { success: true, data: result };
+  }
+
+  @Post('proxies/assign')
+  assignProxies(@Body() body: { accountIds: string[]; proxyIds: string[]; mode?: 'rotate' | 'one-to-one' }) {
+    const updatedCount = this.accountsService.assignProxiesToAccounts(
+      body.accountIds || [],
+      body.proxyIds || [],
+      body.mode || 'rotate'
+    );
+    return { success: true, updatedCount };
+  }
+
+  @Post('proxies/clear-accounts')
+  clearAccountProxies(@Body() body: { accountIds: string[] }) {
+    const updatedCount = this.accountsService.clearAccountProxies(body.accountIds || []);
+    return { success: true, updatedCount };
+  }
+
+  @Delete('proxies/:id')
+  deleteProxy(@Param('id') id: string) {
+    const success = this.accountsService.deleteProxy(id);
     return { success };
   }
 

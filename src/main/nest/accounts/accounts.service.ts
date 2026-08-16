@@ -1,7 +1,7 @@
 import { Injectable, OnModuleInit } from '@nestjs/common';
 import * as fs from 'fs';
 import * as path from 'path';
-import { TikTokAccount, AccountCategory } from './account.interface';
+import { TikTokAccount, AccountCategory, ProxyEntry } from './account.interface';
 import https from 'https';
 
 @Injectable()
@@ -9,9 +9,11 @@ export class AccountsService implements OnModuleInit {
   private dataDir: string;
   private accountsFilePath: string;
   private categoriesFilePath: string;
+  private proxiesFilePath: string;
 
   private accounts: TikTokAccount[] = [];
   private categories: AccountCategory[] = [];
+  private proxies: ProxyEntry[] = [];
 
   onModuleInit() {
     this.dataDir = path.join(process.cwd(), 'data');
@@ -20,9 +22,11 @@ export class AccountsService implements OnModuleInit {
     }
     this.accountsFilePath = path.join(this.dataDir, 'accounts.json');
     this.categoriesFilePath = path.join(this.dataDir, 'categories.json');
+    this.proxiesFilePath = path.join(this.dataDir, 'proxies.json');
 
     this.loadCategories();
     this.loadAccounts();
+    this.loadProxies();
   }
 
   // --- CATEGORIES MANAGEMENT ---
@@ -140,6 +144,147 @@ export class AccountsService implements OnModuleInit {
     } catch (err) {
       console.error('[AccountsService] Failed to save accounts file:', err);
     }
+  }
+
+  private loadProxies() {
+    try {
+      if (fs.existsSync(this.proxiesFilePath)) {
+        const fileContent = fs.readFileSync(this.proxiesFilePath, 'utf-8');
+        this.proxies = JSON.parse(fileContent);
+      } else {
+        this.proxies = [];
+        this.saveProxies();
+      }
+    } catch (err) {
+      console.error('[AccountsService] Failed to load proxies file:', err);
+      this.proxies = [];
+    }
+  }
+
+  private saveProxies() {
+    try {
+      fs.writeFileSync(this.proxiesFilePath, JSON.stringify(this.proxies, null, 2), 'utf-8');
+    } catch (err) {
+      console.error('[AccountsService] Failed to save proxies file:', err);
+    }
+  }
+
+  private isValidProxyValue(proxy?: string): boolean {
+    return !!proxy && proxy.trim().includes(':');
+  }
+
+  getAllProxies(): ProxyEntry[] {
+    return this.proxies;
+  }
+
+  importProxies(
+    rawText: string,
+    proxyType: ProxyEntry['proxyType'] = 'http'
+  ): { addedCount: number; skippedCount: number; proxies: ProxyEntry[]; skippedLines: { line: number; rawText: string; reason: string }[] } {
+    const skippedLines: { line: number; rawText: string; reason: string }[] = [];
+    let addedCount = 0;
+    let skippedCount = 0;
+    const existingValues = new Set(this.proxies.map(p => p.value.trim()));
+
+    rawText.split(/\r?\n/).forEach((rawLine, idx) => {
+      const value = rawLine.trim();
+      if (!value) return;
+
+      if (!this.isValidProxyValue(value)) {
+        skippedCount++;
+        skippedLines.push({ line: idx + 1, rawText: rawLine, reason: 'Proxy thiếu ip:port' });
+        return;
+      }
+
+      if (existingValues.has(value)) {
+        skippedCount++;
+        skippedLines.push({ line: idx + 1, rawText: rawLine, reason: 'Proxy đã tồn tại' });
+        return;
+      }
+
+      const proxy: ProxyEntry = {
+        id: 'proxy_' + Date.now() + '_' + Math.random().toString(36).substring(2, 7),
+        value,
+        proxyType,
+        status: 'untested',
+        createdAt: new Date().toISOString(),
+      };
+      this.proxies.push(proxy);
+      existingValues.add(value);
+      addedCount++;
+    });
+
+    if (addedCount > 0) this.saveProxies();
+    return { addedCount, skippedCount, proxies: this.proxies, skippedLines };
+  }
+
+  deleteProxy(id: string): boolean {
+    const proxy = this.proxies.find(p => p.id === id);
+    const initialLen = this.proxies.length;
+    this.proxies = this.proxies.filter(p => p.id !== id);
+    if (this.proxies.length === initialLen) return false;
+
+    if (proxy) {
+      let accountsChanged = false;
+      this.accounts.forEach(acc => {
+        if (acc.proxy === proxy.value) {
+          acc.proxy = '';
+          acc.proxyType = 'none';
+          accountsChanged = true;
+        }
+      });
+      if (accountsChanged) this.saveAccounts();
+    }
+
+    this.saveProxies();
+    return true;
+  }
+
+  assignProxiesToAccounts(
+    accountIds: string[],
+    proxyIds: string[],
+    mode: 'rotate' | 'one-to-one' = 'rotate'
+  ): number {
+    const selectedProxies = this.proxies.filter(proxy => proxyIds.includes(proxy.id));
+    if (accountIds.length === 0 || selectedProxies.length === 0) return 0;
+
+    let updatedCount = 0;
+    accountIds.forEach((accountId, idx) => {
+      const acc = this.getAccountById(accountId);
+      const proxy = mode === 'one-to-one' ? selectedProxies[idx] : selectedProxies[idx % selectedProxies.length];
+      if (!acc || !proxy) return;
+
+      acc.proxy = proxy.value;
+      acc.proxyType = proxy.proxyType;
+      proxy.assignedAccountId = acc.id;
+      updatedCount++;
+    });
+
+    if (updatedCount > 0) {
+      this.saveAccounts();
+      this.saveProxies();
+    }
+    return updatedCount;
+  }
+
+  clearAccountProxies(ids: string[]): number {
+    let updatedCount = 0;
+    ids.forEach(id => {
+      const acc = this.getAccountById(id);
+      if (!acc) return;
+      acc.proxy = '';
+      acc.proxyType = 'none';
+      this.proxies.forEach(proxy => {
+        if (proxy.assignedAccountId === id) proxy.assignedAccountId = undefined;
+      });
+      updatedCount++;
+    });
+
+    if (updatedCount > 0) {
+      this.saveAccounts();
+      this.saveProxies();
+    }
+    return updatedCount;
   }
 
   getAllAccounts(categoryId?: string): TikTokAccount[] {

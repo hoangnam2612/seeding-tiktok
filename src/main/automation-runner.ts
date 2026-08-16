@@ -2,11 +2,14 @@ import { BrowserWindow, session, ipcMain, screen } from 'electron';
 import { SeedingTaskConfig, TaskLogItem } from './nest/automation/automation.interface';
 import { MailOtpService } from './nest/accounts/mail-otp.service';
 import { generateTotpToken } from './nest/accounts/totp.helper';
+import * as fs from 'fs';
+import * as path from 'path';
 
 const mailOtpService = new MailOtpService();
 
 // Map of active login windows
 const loginWindows = new Map<string, BrowserWindow>();
+const seedingWindows = new Set<BrowserWindow>();
 
 const TILED_LOGIN_TARGET_WIDTH = 430;
 const TILED_LOGIN_TARGET_HEIGHT = 320;
@@ -25,6 +28,14 @@ const TIKTOK_PAGE_LOAD_TIMEOUT_MS = 30000;
 const SEEDING_POST_ACTION_STABILIZE_MS = 12000;
 const SEEDING_ACTION_CONCURRENCY = 3;
 const LIVESTREAM_INITIAL_COMMENT_DELAY_MS = 15000;
+const OMOCAPTCHA_CREATE_TASK_URL = 'https://api.omocaptcha.com/v2/createTask';
+const OMOCAPTCHA_GET_TASK_RESULT_URL = 'https://api.omocaptcha.com/v2/getTaskResult';
+
+type OmoTikTokWebTaskType =
+  | 'TiktokSliderWebTask'
+  | 'TiktokRotateWebTask'
+  | 'TiktokSelectObjectWebTask'
+  | 'Tiktok3DSelectObjectWebTask';
 
 type AccountStatus = 'authenticated' | 'unauthenticated' | 'active' | 'error' | 'live' | 'die';
 type AccountSessionUpdate = {
@@ -317,6 +328,178 @@ async function waitForTikTokSurfaceReady(
   };
 }
 
+async function detectTikTokLoggedOutState(win: BrowserWindow): Promise<{
+  loggedOut: boolean;
+  reason?: string;
+  hasLoginButton?: boolean;
+  hasLoginToComment?: boolean;
+  hasLoginForm?: boolean;
+  hasLoggedInSignal?: boolean;
+}> {
+  if (win.isDestroyed()) {
+    return { loggedOut: false, reason: 'Window destroyed' };
+  }
+
+  return win.webContents.executeJavaScript(`
+    (() => {
+      try {
+        const isVisible = (el) => {
+          if (!el) return false;
+          const rect = el.getBoundingClientRect();
+          const style = window.getComputedStyle(el);
+          return rect.width > 0 &&
+                 rect.height > 0 &&
+                 style.visibility !== 'hidden' &&
+                 style.display !== 'none' &&
+                 style.opacity !== '0';
+        };
+        const textOf = (el) => (el?.innerText || el?.textContent || el?.getAttribute?.('aria-label') || '').trim().toLowerCase();
+        const bodyText = (document.body?.innerText || '').toLowerCase();
+        const buttons = Array.from(document.querySelectorAll('button, a, [role="button"], [data-e2e]')).filter(isVisible);
+        const hasLoginButton = buttons.some(el => {
+          const txt = textOf(el);
+          const e2e = (el.getAttribute?.('data-e2e') || '').toLowerCase();
+          return e2e === 'top-login-button' ||
+                 txt === 'log in' ||
+                 txt === 'login' ||
+                 txt === 'dang nhap' ||
+                 txt.includes('dang nhap') ||
+                 txt.includes('đăng nhập');
+        });
+        const hasLoginToComment = buttons.some(el => {
+          const txt = textOf(el);
+          return txt.includes('log in to comment') ||
+                 txt.includes('login to comment') ||
+                 txt.includes('đăng nhập để bình luận') ||
+                 txt.includes('dang nhap de binh luan');
+        }) || bodyText.includes('log in to comment') || bodyText.includes('login to comment');
+        const hasLoginForm = Array.from(document.querySelectorAll('input[type="password"]')).some(isVisible) ||
+                             bodyText.includes('log in to tiktok') ||
+                             bodyText.includes('use phone or email') ||
+                             bodyText.includes('use phone / email') ||
+                             bodyText.includes('đăng nhập vào tiktok');
+        const hasLoggedInSignal = !!document.querySelector('[data-e2e="profile-icon"]') ||
+                                  buttons.some(el => {
+                                    const txt = textOf(el);
+                                    return txt.includes('log out') || txt.includes('đăng xuất') || txt.includes('dang xuat');
+                                  });
+        const loggedOut = !hasLoggedInSignal && (hasLoginButton || hasLoginToComment || hasLoginForm);
+        const reason = hasLoginToComment
+          ? 'TikTok yeu cau dang nhap de binh luan.'
+          : hasLoginForm
+            ? 'Dang o man hinh dang nhap TikTok.'
+            : hasLoginButton
+              ? 'TikTok hien nut Log in.'
+              : undefined;
+        return { loggedOut, reason, hasLoginButton, hasLoginToComment, hasLoginForm, hasLoggedInSignal };
+      } catch(e) {
+        return { loggedOut: false, reason: String(e) };
+      }
+    })();
+  `).catch(() => ({ loggedOut: false }));
+}
+
+async function clearTikTokAuthCookies(customSession: Electron.Session): Promise<void> {
+  const cookies = await customSession.cookies.get({});
+  const authCookieNames = new Set([
+    'sessionid',
+    'sessionid_ss',
+    'sid_tt',
+    'sid_guard',
+    'uid_tt',
+    'uid_tt_ss',
+    'sid_ucp_v1',
+    'ssid_ucp_v1',
+    'store-idc',
+    'store-country-code',
+  ]);
+
+  await Promise.all(cookies
+    .filter(cookie => isTikTokCookie(cookie) && authCookieNames.has(cookie.name))
+    .map(cookie => {
+      const protocol = cookie.secure ? 'https' : 'http';
+      const domain = cookie.domain?.startsWith('.') ? cookie.domain.slice(1) : cookie.domain;
+      if (!domain) return Promise.resolve();
+      return customSession.cookies.remove(`${protocol}://${domain}${cookie.path || '/'}`, cookie.name).catch(() => undefined);
+    }));
+}
+
+async function ensureAuthenticatedForSeeding(
+  win: BrowserWindow,
+  customSession: Electron.Session,
+  acc: AccountInfo,
+  targetUrl: string,
+  onLog: (log: Omit<TaskLogItem, 'id' | 'timestamp'>) => void,
+  onAccountStatusChange: (id: string, status: AccountStatus) => void,
+  onAccountSessionUpdate: (id: string, update: AccountSessionUpdate) => void
+): Promise<boolean> {
+  const loggedOutState = await detectTikTokLoggedOutState(win);
+  if (!loggedOutState.loggedOut) return true;
+
+  onAccountStatusChange(acc.id, 'unauthenticated');
+  onLog({
+    accountId: acc.id,
+    accountUsername: acc.username,
+    level: 'warning',
+    message: `[Auth] @${acc.username} bi out session khi seeding: ${loggedOutState.reason || 'TikTok hien trang thai chua dang nhap.'}`,
+  });
+
+  if (!acc.password) {
+    onLog({
+      accountId: acc.id,
+      accountUsername: acc.username,
+      level: 'warning',
+      message: `[Auth] @${acc.username} chua co mat khau trong app nen khong the tu login lai. Vui long mo Chrome/Login thu cong de lay session moi.`,
+    });
+    return false;
+  }
+
+  onLog({
+    accountId: acc.id,
+    accountUsername: acc.username,
+    level: 'info',
+    message: `[Auth] Dang tu login lai cho @${acc.username} truoc khi tiep tuc seeding...`,
+  });
+
+  await clearTikTokAuthCookies(customSession).catch(() => undefined);
+  await win.loadURL('https://www.tiktok.com/login/phone-or-email/email').catch((err: any) => {
+    const errMsg = err?.message || String(err);
+    if (!errMsg.includes('ERR_ABORTED') && err?.code !== 'ERR_ABORTED' && err?.errno !== -3) {
+      throw err;
+    }
+  });
+
+  const loginResult = await monitorLoginFlow(
+    win,
+    customSession,
+    acc,
+    onLog,
+    onAccountStatusChange,
+    onAccountSessionUpdate
+  );
+
+  if (!loginResult?.success) {
+    onAccountStatusChange(acc.id, 'unauthenticated');
+    onLog({
+      accountId: acc.id,
+      accountUsername: acc.username,
+      level: 'error',
+      message: `[Auth] Login lai that bai cho @${acc.username}: ${loginResult?.status || 'unknown'}. Bo qua tai khoan nay.`,
+    });
+    return false;
+  }
+
+  onLog({
+    accountId: acc.id,
+    accountUsername: acc.username,
+    level: 'success',
+    message: `[Auth] Login lai thanh cong cho @${acc.username}. Dang tai lai URL seeding...`,
+  });
+
+  await loadTikTokUrlForSeeding(win, customSession, targetUrl, acc, onLog);
+  return true;
+}
+
 /**
  * Helper to inject Proxy and Cookie string into an Electron Session
  */
@@ -545,6 +728,334 @@ async function loadTikTokUrlForSeeding(
   if (snapshot.isBlank) {
     throw new Error(`TikTok van trang/trong sau reload cho @${acc.username}: url=${snapshot.url || 'unknown'}, readyState=${snapshot.readyState || 'unknown'}, bodyHtml=${snapshot.bodyHtmlLength ?? 'unknown'}`);
   }
+}
+
+function getOmoCaptchaApiKey(): string {
+  try {
+    const settingsPath = path.join(process.cwd(), 'data', 'settings.json');
+    if (!fs.existsSync(settingsPath)) return '';
+    const settings = JSON.parse(fs.readFileSync(settingsPath, 'utf-8'));
+    return String(settings.omocaptchaApiKey || '').trim();
+  } catch {
+    return '';
+  }
+}
+
+async function postOmoCaptcha(payload: any): Promise<any> {
+  const res = await fetch(payload.task ? OMOCAPTCHA_CREATE_TASK_URL : OMOCAPTCHA_GET_TASK_RESULT_URL, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+  return res.json();
+}
+
+async function solveTikTokWebCaptchaWithOmo(
+  win: BrowserWindow,
+  acc: { id: string; username: string },
+  onLog: (log: Omit<TaskLogItem, 'id' | 'timestamp'>) => void
+): Promise<boolean> {
+  const clientKey = getOmoCaptchaApiKey();
+  if (!clientKey) {
+    onLog({
+      accountId: acc.id,
+      accountUsername: acc.username,
+      level: 'warning',
+      message: '[Captcha] OmoCaptcha API key is empty. Manual TikTok captcha solving required.',
+    });
+    return false;
+  }
+
+  const captchaInfo = await win.webContents.executeJavaScript(`
+    (() => {
+      try {
+        const isVisible = (el) => {
+          if (!el) return false;
+          const rect = el.getBoundingClientRect();
+          const style = window.getComputedStyle(el);
+          return rect.width > 80 && rect.height > 60 && style.visibility !== 'hidden' && style.display !== 'none';
+        };
+        const detectTaskType = (root) => {
+          const text = String((root?.innerText || '') + ' ' + (document.body?.innerText || '')).toLowerCase();
+          if (/3d|three[- ]?d|same object|same shape|matching object|hai doi tuong|2 doi tuong/.test(text)) {
+            return 'Tiktok3DSelectObjectWebTask';
+          }
+          if (/rotate|xoay|angle|match the shape|fit the shape/.test(text)) {
+            return 'TiktokRotateWebTask';
+          }
+          if (/select|choose|pick|object|chon|doi tuong|vat the/.test(text)) {
+            return 'TiktokSelectObjectWebTask';
+          }
+          return 'TiktokSliderWebTask';
+        };
+
+        const candidates = Array.from(document.querySelectorAll(
+          '#captcha-verify-container, .sec-captcha-container, [class*="captcha" i], [id*="captcha" i], iframe[src*="captcha"], iframe[src*="sec"]'
+        )).filter(isVisible);
+        const captcha = candidates.sort((a, b) => {
+          const ar = a.getBoundingClientRect();
+          const br = b.getBoundingClientRect();
+          return (br.width * br.height) - (ar.width * ar.height);
+        })[0];
+        if (!captcha) return { found: false };
+
+        const rect = captcha.getBoundingClientRect();
+        const slider = Array.from(document.querySelectorAll(
+          '[class*="slider" i], [class*="drag" i], [role="slider"], button, [role="button"]'
+        )).filter(el => {
+          if (!isVisible(el)) return false;
+          const r = el.getBoundingClientRect();
+          return r.width >= 20 && r.height >= 20 && r.left >= rect.left - 20 && r.right <= rect.right + 20 && r.top >= rect.top - 20 && r.bottom <= rect.bottom + 60;
+        }).sort((a, b) => {
+          const ar = a.getBoundingClientRect();
+          const br = b.getBoundingClientRect();
+          return ar.left - br.left;
+        })[0];
+        const sliderRect = slider?.getBoundingClientRect();
+        const track = Array.from(document.querySelectorAll(
+          '[class*="track" i], [class*="slider" i], [class*="drag" i], [role="slider"]'
+        )).filter(el => {
+          if (!isVisible(el)) return false;
+          const r = el.getBoundingClientRect();
+          return r.width >= 80 && r.height >= 8 && r.left >= rect.left - 30 && r.right <= rect.right + 30 && r.top >= rect.top - 20 && r.bottom <= rect.bottom + 80;
+        }).sort((a, b) => {
+          const ar = a.getBoundingClientRect();
+          const br = b.getBoundingClientRect();
+          return (br.width * br.height) - (ar.width * ar.height);
+        })[0];
+        const trackRect = track?.getBoundingClientRect();
+
+        return {
+          found: true,
+          taskType: detectTaskType(captcha),
+          rect: {
+            x: Math.max(0, Math.round(rect.left)),
+            y: Math.max(0, Math.round(rect.top)),
+            width: Math.round(rect.width),
+            height: Math.round(rect.height)
+          },
+          widthView: Math.round(rect.width),
+          heightView: Math.round(rect.height),
+          slider: sliderRect ? {
+            x: Math.round(sliderRect.left + sliderRect.width / 2),
+            y: Math.round(sliderRect.top + sliderRect.height / 2)
+          } : null,
+          track: trackRect ? {
+            x: Math.round(trackRect.left),
+            y: Math.round(trackRect.top),
+            width: Math.round(trackRect.width),
+            height: Math.round(trackRect.height)
+          } : null
+        };
+      } catch(e) {
+        return { found: false, error: String(e) };
+      }
+    })();
+  `).catch(() => ({ found: false }));
+
+  if (!captchaInfo?.found || !captchaInfo.rect) {
+    onLog({
+      accountId: acc.id,
+      accountUsername: acc.username,
+      level: 'warning',
+      message: '[Captcha] Could not locate TikTok captcha panel for OmoCaptcha.',
+    });
+    return false;
+  }
+
+  const image = await win.webContents.capturePage(captchaInfo.rect);
+  const imageBase64 = image.toDataURL().split(',')[1] || '';
+  const taskType = ([
+    'TiktokSliderWebTask',
+    'TiktokRotateWebTask',
+    'TiktokSelectObjectWebTask',
+    'Tiktok3DSelectObjectWebTask',
+  ].includes(captchaInfo.taskType) ? captchaInfo.taskType : 'TiktokSliderWebTask') as OmoTikTokWebTaskType;
+  const taskPayload: {
+    type: OmoTikTokWebTaskType;
+    imageBase64: string;
+    widthView: number;
+    heightView?: number;
+  } = {
+    type: taskType,
+    imageBase64,
+    widthView: captchaInfo.widthView,
+  };
+
+  if (taskType !== 'TiktokSliderWebTask') {
+    taskPayload.heightView = captchaInfo.heightView || captchaInfo.rect.height;
+  }
+
+  onLog({
+    accountId: acc.id,
+    accountUsername: acc.username,
+    level: 'info',
+    message: `[Captcha] Sending ${taskType} to OmoCaptcha. widthView=${taskPayload.widthView}, heightView=${taskPayload.heightView || 'n/a'}`,
+  });
+
+  const createRes = await postOmoCaptcha({
+    clientKey,
+    task: taskPayload,
+  });
+
+  if (createRes.errorId !== 0 || !createRes.taskId) {
+    onLog({
+      accountId: acc.id,
+      accountUsername: acc.username,
+      level: 'error',
+      message: `[Captcha] OmoCaptcha createTask failed: ${createRes.errorCode || ''} ${createRes.errorDescription || ''}`,
+    });
+    return false;
+  }
+
+  let solution: any = null;
+  for (let i = 0; i < 12; i++) {
+    await new Promise(res => setTimeout(res, i === 0 ? 1200 : 2000));
+    const resultRes = await postOmoCaptcha({ clientKey, taskId: createRes.taskId });
+    if (resultRes.errorId !== 0) {
+      onLog({
+        accountId: acc.id,
+        accountUsername: acc.username,
+        level: 'error',
+        message: `[Captcha] OmoCaptcha getTaskResult failed: ${resultRes.errorCode || ''} ${resultRes.errorDescription || ''}`,
+      });
+      return false;
+    }
+    if (resultRes.status === 'ready') {
+      solution = resultRes.solution;
+      break;
+    }
+    if (resultRes.status === 'fail') {
+      onLog({
+        accountId: acc.id,
+        accountUsername: acc.username,
+        level: 'error',
+        message: '[Captcha] OmoCaptcha task failed.',
+      });
+      return false;
+    }
+  }
+
+  const zoomFactor = win.webContents.getZoomFactor();
+  const toAbsolutePoint = (point: any) => ({
+    x: Math.round((captchaInfo.rect.x + Number(point.x || 0)) * zoomFactor),
+    y: Math.round((captchaInfo.rect.y + Number(point.y || 0)) * zoomFactor),
+  });
+  const clickPoint = async (point: any) => {
+    const { x, y } = toAbsolutePoint(point);
+    win.webContents.sendInputEvent({ type: 'mouseMove', x, y });
+    await new Promise(res => setTimeout(res, 80 + Math.random() * 80));
+    win.webContents.sendInputEvent({ type: 'mouseDown', x, y, button: 'left', clickCount: 1 });
+    await new Promise(res => setTimeout(res, 70 + Math.random() * 80));
+    win.webContents.sendInputEvent({ type: 'mouseUp', x, y, button: 'left', clickCount: 1 });
+    await new Promise(res => setTimeout(res, 350 + Math.random() * 250));
+  };
+  const dragToPoint = async (end: any) => {
+    const startX = Math.round((captchaInfo.slider?.x || (captchaInfo.rect.x + 38)) * zoomFactor);
+    const startY = Math.round((captchaInfo.slider?.y || (captchaInfo.rect.y + captchaInfo.rect.height - 34)) * zoomFactor);
+    const endPoint = toAbsolutePoint({
+      x: Number(end.x || 0),
+      y: typeof end.y === 'number' ? end.y : captchaInfo.rect.height - 34,
+    });
+    const steps = 28;
+
+    win.webContents.sendInputEvent({ type: 'mouseMove', x: startX, y: startY });
+    win.webContents.sendInputEvent({ type: 'mouseDown', x: startX, y: startY, button: 'left', clickCount: 1 });
+    for (let i = 1; i <= steps; i++) {
+      const t = i / steps;
+      const ease = 1 - Math.pow(1 - t, 2);
+      const x = Math.round(startX + (endPoint.x - startX) * ease + (Math.random() * 2 - 1));
+      const y = Math.round(startY + (endPoint.y - startY) * t + (Math.random() * 2 - 1));
+      win.webContents.sendInputEvent({ type: 'mouseMove', x, y });
+      await new Promise(res => setTimeout(res, 18 + Math.random() * 20));
+    }
+    win.webContents.sendInputEvent({ type: 'mouseUp', x: endPoint.x, y: endPoint.y, button: 'left', clickCount: 1 });
+  };
+  const dragByAngle = async (angle: number) => {
+    const startX = Math.round((captchaInfo.slider?.x || (captchaInfo.rect.x + 38)) * zoomFactor);
+    const startY = Math.round((captchaInfo.slider?.y || (captchaInfo.rect.y + captchaInfo.rect.height - 34)) * zoomFactor);
+    const trackWidth = captchaInfo.track?.width || Math.max(120, captchaInfo.rect.width - 80);
+    const clampedAngle = Math.max(-180, Math.min(180, Number(angle) || 0));
+    const offset = Math.round((clampedAngle / 180) * (trackWidth * 0.45) * zoomFactor);
+    const endX = startX + offset;
+    await dragToPoint({
+      x: (endX / zoomFactor) - captchaInfo.rect.x,
+      y: (startY / zoomFactor) - captchaInfo.rect.y,
+    });
+  };
+
+  let applied = false;
+  if (solution?.pointA && solution?.pointB) {
+    await clickPoint(solution.pointA);
+    await clickPoint(solution.pointB);
+    applied = true;
+  } else if (Array.isArray(solution?.points) && solution.points.length) {
+    for (const point of solution.points.slice(0, 6)) {
+      await clickPoint(point);
+    }
+    applied = true;
+  } else if (solution?.point && typeof solution.point.x === 'number') {
+    await clickPoint(solution.point);
+    applied = true;
+  } else if (Array.isArray(solution?.objects) && solution.objects.length) {
+    for (const objectIndex of solution.objects.slice(0, 6)) {
+      const index = Math.max(0, Number(objectIndex) || 0);
+      const col = index % 3;
+      const row = Math.floor(index / 3);
+      await clickPoint({
+        x: captchaInfo.rect.width * (col + 0.5) / 3,
+        y: captchaInfo.rect.height * (row + 0.5) / 2,
+      });
+    }
+    applied = true;
+  } else if (solution?.end && typeof solution.end.x === 'number') {
+    await dragToPoint(solution.end);
+    applied = true;
+  } else {
+    const angle = solution?.angle ?? solution?.degree ?? solution?.degrees ?? solution?.rotate;
+    if (typeof angle === 'number' || typeof angle === 'string') {
+      await dragByAngle(Number(angle));
+      applied = true;
+    }
+  }
+
+  if (!applied) {
+    onLog({
+      accountId: acc.id,
+      accountUsername: acc.username,
+      level: 'warning',
+      message: `[Captcha] OmoCaptcha returned unsupported ${taskType} solution shape: ${JSON.stringify(solution || {})}`,
+    });
+    return false;
+  }
+
+  await win.webContents.executeJavaScript(`
+    (() => {
+      try {
+        const texts = ['verify', 'confirm', 'submit', 'done', 'ok', 'continue', 'xac minh', 'xong', 'tiep tuc'];
+        const isVisible = (el) => {
+          const r = el.getBoundingClientRect();
+          const s = window.getComputedStyle(el);
+          return r.width > 0 && r.height > 0 && s.visibility !== 'hidden' && s.display !== 'none';
+        };
+        const button = Array.from(document.querySelectorAll('button, [role="button"]')).find(el => {
+          if (!isVisible(el)) return false;
+          const text = (el.innerText || el.textContent || el.getAttribute('aria-label') || '').toLowerCase();
+          return texts.some(t => text.includes(t));
+        });
+        button?.click();
+      } catch(e) {}
+    })();
+  `).catch(() => undefined);
+  await new Promise(res => setTimeout(res, 2500));
+
+  onLog({
+    accountId: acc.id,
+    accountUsername: acc.username,
+    level: 'success',
+    message: `[Captcha] OmoCaptcha ${taskType} solution submitted for @${acc.username}.`,
+  });
+  return true;
 }
 
 async function activateLiveUiForTapping(win: BrowserWindow): Promise<void> {
@@ -929,6 +1440,7 @@ async function monitorLoginFlow(
   let emailOptionClickedAt = 0;
   let hasFilledEmailOtp = false;
   let requestedOtpTimestamp = 0;
+  let isSolvingCaptcha = false;
 
 
   onLog({
@@ -1048,6 +1560,30 @@ async function monitorLoginFlow(
                              bodyText.includes('Incorrect password') ||
                              bodyText.includes('User does not exist');
 
+            const visibleButtons = Array.from(document.querySelectorAll('button, a, [role="button"], [data-e2e]')).filter(isVisible);
+            const hasLoginButton = visibleButtons.some(el => {
+              const txt = (el.innerText || el.textContent || el.getAttribute('aria-label') || '').trim().toLowerCase();
+              const e2e = (el.getAttribute('data-e2e') || '').toLowerCase();
+              return e2e === 'top-login-button' ||
+                     txt === 'log in' ||
+                     txt === 'login' ||
+                     txt.includes('dang nhap') ||
+                     txt.includes('đăng nhập');
+            });
+            const hasLoginToComment = visibleButtons.some(el => {
+              const txt = (el.innerText || el.textContent || el.getAttribute('aria-label') || '').trim().toLowerCase();
+              return txt.includes('log in to comment') ||
+                     txt.includes('login to comment') ||
+                     txt.includes('đăng nhập để bình luận') ||
+                     txt.includes('dang nhap de binh luan');
+            }) || lowerText.includes('log in to comment') || lowerText.includes('login to comment');
+            const isLoginScreen = hasLoginButton ||
+                                  hasLoginToComment ||
+                                  bodyText.includes('Log in to TikTok') ||
+                                  bodyText.includes('Use phone or email') ||
+                                  bodyText.includes('Đăng nhập vào TikTok') ||
+                                  bodyText.includes('Ã„ÂÃ„Æ’ng nhÃ¡ÂºÂ­p');
+
             return {
               hasUserMenu,
               hasLogoutBtn,
@@ -1055,7 +1591,10 @@ async function monitorLoginFlow(
               is2FA,
               isEmailOptionSelectionScreen: resolvedEmailOptionSelectionScreen,
               isEmailCodeInputScreen: resolvedEmailCodeInputScreen,
-              hasError
+              hasError,
+              isLoginScreen,
+              hasLoginButton,
+              hasLoginToComment
             };
           } catch(e) {
             return {
@@ -1065,14 +1604,18 @@ async function monitorLoginFlow(
               is2FA: false,
               isEmailOptionSelectionScreen: false,
               isEmailCodeInputScreen: false,
-              hasError: false
+              hasError: false,
+              isLoginScreen: false,
+              hasLoginButton: false,
+              hasLoginToComment: false
             };
           }
         })();
       `);
 
-      // A. STRICT LOGGED_IN CHECK (Requires Session Cookie OR strict User Menu/Logout button)
-      if (hasSessionCookie || (pageState.hasUserMenu && pageState.hasLogoutBtn)) {
+      // A. STRICT LOGGED_IN CHECK
+      // A stale TikTok cookie can remain after the page has been logged out, so DOM logged-out signals win.
+      if ((hasSessionCookie && !pageState.isLoginScreen) || (pageState.hasUserMenu && pageState.hasLogoutBtn)) {
         const savedCookie = await persistTikTokSessionCookies(
           acc.id,
           acc.username,
@@ -1092,15 +1635,34 @@ async function monitorLoginFlow(
         return { success: true, status: 'authenticated' };
       }
 
-      // B. CAPTCHA DETECTED -> Log warning, wait, DO NOT spam OTP
+      // B. CAPTCHA DETECTED -> Try OmoCaptcha, then wait/manual fallback.
       if (pageState.hasCaptcha) {
+        if (!isSolvingCaptcha) {
+          isSolvingCaptcha = true;
+          const solved = await solveTikTokWebCaptchaWithOmo(win, acc, onLog).catch(err => {
+            onLog({
+              accountId: acc.id,
+              accountUsername: acc.username,
+              level: 'error',
+              message: `[Captcha] OmoCaptcha solve error: ${err?.message || err}`,
+            });
+            return false;
+          });
+          isSolvingCaptcha = false;
+          if (solved) {
+            hasWarnedCaptcha = false;
+            await new Promise(r => setTimeout(r, pollIntervalMs));
+            continue;
+          }
+        }
+
         if (!hasWarnedCaptcha) {
           hasWarnedCaptcha = true;
           onLog({
             accountId: acc.id,
             accountUsername: acc.username,
             level: 'warning',
-            message: `âš ï¸ PHÃT HIá»†N CAPTCHA/CHALLENGE cho @${acc.username}! Vui lÃ²ng kÃ©o/giáº£i Captcha thá»§ cÃ´ng trÃªn mÃ n hÃ¬nh Chrome. Äang tiáº¿p tá»¥c chá»...`,
+            message: `âš ï¸ PHÃT HIá»†N CAPTCHA/CHALLENGE cho @${acc.username}! OmoCaptcha chÆ°a giáº£i Ä‘Æ°á»£c hoáº·c chÆ°a cÃ³ API key. Vui lÃ²ng kÃ©o/giáº£i thá»§ cÃ´ng náº¿u cáº§n.`,
           });
         }
         await new Promise(r => setTimeout(r, pollIntervalMs));
@@ -1224,7 +1786,7 @@ async function monitorLoginFlow(
       }
 
       // F. UNAUTHENTICATED HOMEPAGE / LOGIN FORM DETECTED -> Click "Log in" button or trigger Auto-fill
-      if (!hasSessionCookie && acc.password) {
+      if ((!hasSessionCookie || pageState.isLoginScreen || pageState.hasLoginButton || pageState.hasLoginToComment) && acc.password) {
         const loginCheck = await win.webContents.executeJavaScript(`
           (() => {
             try {
@@ -1348,6 +1910,30 @@ export function setupAutomationIPC(
   onAccountStatusChange: (id: string, status: AccountStatus) => void,
   onAccountSessionUpdate: (id: string, update: AccountSessionUpdate) => void
 ) {
+  ipcMain.handle('close-all-browser-windows', async () => {
+    let closedCount = 0;
+    const windows = new Set<BrowserWindow>([
+      ...Array.from(loginWindows.values()),
+      ...Array.from(seedingWindows.values()),
+    ]);
+
+    windows.forEach(win => {
+      if (!win.isDestroyed()) {
+        closedCount++;
+        win.close();
+      }
+    });
+    loginWindows.clear();
+    seedingWindows.clear();
+
+    onLog({
+      level: 'info',
+      message: `[Browser] Closed ${closedCount} browser window(s).`,
+    });
+
+    return { success: true, closedCount };
+  });
+
   // 1. Open Interactive Login Window for a TikTok Account (Single Chrome)
   ipcMain.handle(
     'open-account-login-window',
@@ -1603,7 +2189,7 @@ export function setupAutomationIPC(
   // 3. Execute Seeding Task across accounts
   ipcMain.handle(
     'execute-seeding-task',
-    async (_event, config: SeedingTaskConfig, accounts: { id: string; username: string; cookie?: string; proxy?: string; proxyType?: string }[]) => {
+    async (_event, config: SeedingTaskConfig, accounts: Array<AccountInfo & { proxy?: string; proxyType?: string }>) => {
       onLog({
         level: 'info',
         message: `ðŸš€ Báº¯t Ä‘áº§u tÃ¡c vá»¥ Seeding trÃªn ${config.targetType.toUpperCase()}: ${config.targetUrl}`,
@@ -1648,7 +2234,7 @@ export function setupAutomationIPC(
           });
 
           try {
-            await executeTaskForAccount(acc, config, onLog, onAccountSessionUpdate, loginWindows.size + index);
+            await executeTaskForAccount(acc, config, onLog, onAccountStatusChange, onAccountSessionUpdate, loginWindows.size + index);
             completedCount++;
             onLog({
               accountId: acc.id,
@@ -1694,9 +2280,10 @@ export function setupAutomationIPC(
  * Execute automation actions for a single account on TikTok Video / Live
  */
 async function executeTaskForAccount(
-  acc: { id: string; username: string; cookie?: string; proxy?: string; proxyType?: string },
+  acc: AccountInfo & { proxy?: string; proxyType?: string },
   config: SeedingTaskConfig,
   onLog: (log: Omit<TaskLogItem, 'id' | 'timestamp'>) => void,
+  onAccountStatusChange: (id: string, status: AccountStatus) => void,
   onAccountSessionUpdate: (id: string, update: AccountSessionUpdate) => void,
   windowSlot: number = 0
 ) {
@@ -1736,6 +2323,10 @@ async function executeTaskForAccount(
       backgroundThrottling: false,
     },
   });
+  seedingWindows.add(win);
+  win.on('closed', () => {
+    seedingWindows.delete(win);
+  });
   const muteBrowserAudio = config.muteBrowserAudio !== false;
   win.webContents.setAudioMuted(muteBrowserAudio);
 
@@ -1772,6 +2363,56 @@ async function executeTaskForAccount(
       })();
     `);
     await new Promise(res => setTimeout(res, 800));
+
+    const authReady = await ensureAuthenticatedForSeeding(
+      win,
+      customSession,
+      acc,
+      config.targetUrl,
+      onLog,
+      onAccountStatusChange,
+      onAccountSessionUpdate
+    );
+    if (!authReady) {
+      throw new Error(`@${acc.username} is logged out and could not be re-authenticated.`);
+    }
+
+    win.webContents.setZoomFactor(TIKTOK_SEEDING_ZOOM);
+    await win.webContents.executeJavaScript(`
+      (() => {
+        try {
+          document.documentElement.style.overflowX = 'auto';
+          document.body.style.overflowX = 'auto';
+          document.scrollingElement && (document.scrollingElement.scrollLeft = 0);
+          const horizontalScrollers = Array.from(document.querySelectorAll('*')).filter(el => el.scrollWidth > el.clientWidth + 80);
+          horizontalScrollers.slice(0, 6).forEach(el => {
+            try { el.scrollLeft = 0; } catch(e) {}
+          });
+        } catch(e) {}
+      })();
+    `);
+    await new Promise(res => setTimeout(res, 800));
+
+    const hasInitialCaptcha = await win.webContents.executeJavaScript(`
+      (() => {
+        const bodyText = document.body?.innerText || '';
+        return !!document.querySelector('iframe[src*="captcha"], iframe[src*="sec"], #captcha-verify-container, .sec-captcha-container') ||
+               bodyText.includes('Drag the slider') ||
+               bodyText.includes('Complete the puzzle') ||
+               bodyText.includes('Verify to continue');
+      })();
+    `).catch(() => false);
+    if (hasInitialCaptcha) {
+      await solveTikTokWebCaptchaWithOmo(win, acc, onLog).catch(err => {
+        onLog({
+          accountId: acc.id,
+          accountUsername: acc.username,
+          level: 'error',
+          message: `[Captcha] Initial OmoCaptcha solve error: ${err?.message || err}`,
+        });
+        return false;
+      });
+    }
 
     onLog({
       accountId: acc.id,
