@@ -3263,7 +3263,26 @@ async function executeTaskForAccount(
     `);
     await waitForSeedingDelay(800, win);
 
-    await checkAndSolveAnyCaptcha(win, acc, onLog);
+    const hasInitialCaptcha = await win.webContents.executeJavaScript(`
+      (() => {
+        const bodyText = document.body?.innerText || '';
+        return !!document.querySelector('iframe[src*="captcha"], iframe[src*="sec"], #captcha-verify-container, .sec-captcha-container') ||
+               bodyText.includes('Drag the slider') ||
+               bodyText.includes('Complete the puzzle') ||
+               bodyText.includes('Verify to continue');
+      })();
+    `).catch(() => false);
+    if (hasInitialCaptcha) {
+      await solveTikTokWebCaptchaWithOmo(win, acc, onLog).catch(err => {
+        onLog({
+          accountId: acc.id,
+          accountUsername: acc.username,
+          level: 'error',
+          message: `[Captcha] Initial OmoCaptcha solve error: ${err?.message || err}`,
+        });
+        return false;
+      });
+    }
     throwIfSeedingCancelled(win);
 
     onLog({
@@ -3285,12 +3304,18 @@ async function executeTaskForAccount(
     });
 
     if (config.targetType === 'video') {
+      await runSeedingInteraction(async () => {
+        if (!win.isDestroyed()) {
+          await waitForSeedingDelay(150, win);
+        }
+        throwIfSeedingCancelled(win);
+
       if (config.likeEnabled) {
         onLog({
           accountId: acc.id,
           accountUsername: acc.username,
           level: 'info',
-          message: 'Đang thực hiện thả tim (Like) video...',
+          message: `Äang thá»±c hiá»‡n tháº£ tim (Like) video...`,
         });
 
         let likeResult: any = { attempted: false, alreadyLiked: false, target: null };
@@ -3346,13 +3371,34 @@ async function executeTaskForAccount(
                 '[data-e2e*="like"]',
                 'button[data-e2e*="like" i]',
                 'button[aria-label*="like" i]',
-                'button[aria-label*="thích" i]',
-                'button[aria-label*="Thích" i]',
+                'button[aria-label*="thÃ­ch" i]',
+                'button[aria-label*="ThÃ­ch" i]',
                 '[role="button"][aria-label*="like" i]',
+                '[role="button"][aria-label*="thÃ­ch" i]',
+                '[role="button"][aria-label*="ThÃ­ch" i]',
                 'span[aria-label*="like" i]',
+                'span[aria-label*="thÃ­ch" i]',
                 'div[class*="LikeContainer"]',
-                'button[class*="ButtonLike"]'
+                'button[class*="ButtonLike"]',
+                'div[class*="ButtonActionItem"]'
               ];
+
+              const likedXPaths = [
+                '//*[@data-e2e="browse-like-icon"]/ancestor::button[@aria-pressed="true"]',
+                '//main //*[@data-e2e="like-icon"]/ancestor::button[@aria-pressed="true"]',
+                '//*[@data-e2e="like-icon"]/ancestor::button[@aria-pressed="true"]',
+                '//video/ancestor::*[@data-e2e="recommend-list-item-container"]//*[@data-e2e="like-icon"]/ancestor::button[@aria-pressed="true"]'
+              ];
+              const getByXPath = (xpath) => document.evaluate(
+                xpath,
+                document,
+                null,
+                XPathResult.FIRST_ORDERED_NODE_TYPE,
+                null
+              ).singleNodeValue;
+              const likedByXPath = likedXPaths.map(getByXPath).find(isVisible);
+              if (likedByXPath) return { found: true, liked: true };
+
               const node = selectors
                 .flatMap(selector => Array.from(document.querySelectorAll(selector)))
                 .find(isVisible);
@@ -3368,8 +3414,8 @@ async function executeTaskForAccount(
                 liked: node.getAttribute?.('aria-pressed') === 'true' ||
                        label.includes('liked') ||
                        label.includes('unlike') ||
-                       label.includes('đã thích') ||
-                       label.includes('bỏ thích') ||
+                       label.includes('Ä‘Ã£ thÃ­ch') ||
+                       label.includes('bá» thÃ­ch') ||
                        hasLikedColor(node)
               };
             } catch(e) {
@@ -3388,121 +3434,217 @@ async function executeTaskForAccount(
                   const style = window.getComputedStyle(el);
                   return rect.width > 0 && rect.height > 0 && style.visibility !== 'hidden' && style.display !== 'none';
                 };
+
+                const getLabel = (el) => [
+                  el?.getAttribute?.('aria-label'),
+                  el?.getAttribute?.('title'),
+                  el?.getAttribute?.('class'),
+                  el?.getAttribute?.('data-e2e'),
+                  el?.textContent
+                ].join(' ').toLowerCase();
+
+                const isLikedColor = (color) => {
+                  if (!color) return false;
+                  const normalized = color.replace(/\s+/g, '').toLowerCase();
+                  return normalized === 'rgb(255,59,92)' ||
+                         normalized === 'rgba(255,59,92,1)' ||
+                         normalized === 'rgb(254,44,85)' ||
+                         normalized === 'rgba(254,44,85,1)' ||
+                         normalized === 'rgb(255,42,91)' ||
+                         normalized === 'rgba(255,42,91,1)' ||
+                         normalized === 'rgb(235,32,73)' ||
+                         normalized === 'rgba(235,32,73,1)' ||
+                         normalized.includes('#fe2c55') ||
+                         normalized.includes('#ff3b5c') ||
+                         normalized.includes('#ff2a5b') ||
+                         normalized === 'red';
+                };
+
+                const hasLikedColor = (el) => {
+                  if (!el) return false;
+                  const colorTargets = [
+                    el,
+                    el.querySelector?.('svg'),
+                    el.querySelector?.('path'),
+                    el.querySelector?.('[fill]'),
+                    el.querySelector?.('[stroke]')
+                  ].filter(Boolean);
+
+                  return colorTargets.some(target => {
+                    const style = window.getComputedStyle(target);
+                    return isLikedColor(style.color) ||
+                           isLikedColor(style.fill) ||
+                           isLikedColor(style.stroke) ||
+                           isLikedColor(target.getAttribute?.('fill')) ||
+                           isLikedColor(target.getAttribute?.('stroke'));
+                  });
+                };
+
+                const isLikedControl = (el) => {
+                  const label = getLabel(el);
+                  return el?.getAttribute?.('aria-pressed') === 'true' ||
+                         label.includes('liked') ||
+                         label.includes('unlike') ||
+                         label.includes('Ä‘Ã£ thÃ­ch') ||
+                         label.includes('bá» thÃ­ch') ||
+                         hasLikedColor(el);
+                };
+
+                const getClickableParent = (el) => {
+                  let cur = el;
+                  for (let i = 0; i < 6 && cur; i++) {
+                    const tag = cur.tagName?.toLowerCase();
+                    const role = cur.getAttribute?.('role');
+                    if (tag === 'button' || role === 'button') return cur;
+                    cur = cur.parentElement;
+                  }
+                  return el;
+                };
+
                 const selectors = [
+                  { type: 'xpath', value: '//*[@data-e2e="browse-like-icon"]/ancestor::button[@aria-pressed="false"]' },
+                  { type: 'xpath', value: '//main //*[@data-e2e="like-icon"]/ancestor::button[@aria-pressed="false"]' },
+                  { type: 'xpath', value: '//*[@data-e2e="like-icon"]/ancestor::button[@aria-pressed="false"]' },
+                  { type: 'xpath', value: '//video/ancestor::*[@data-e2e="recommend-list-item-container"]//*[@data-e2e="like-icon"]/ancestor::button[@aria-pressed="false"]' },
+                  { type: 'xpath', value: '//strong[contains(@data-e2e,"like-count")]//parent::button' },
                   '[data-e2e="like-icon"]',
                   '[data-e2e="browse-like-icon"]',
                   '[data-e2e="video-like-icon"]',
                   '[data-e2e="feed-like"]',
+                  '[data-e2e="search-like-icon"]',
+                  '[data-e2e*="like"]',
+                  'button[data-e2e*="like" i]',
                   'button[aria-label*="like" i]',
-                  'button[aria-label*="thích" i]',
-                  'button[aria-label*="Thích" i]',
+                  'button[aria-label*="thÃ­ch" i]',
+                  'button[aria-label*="ThÃ­ch" i]',
                   '[role="button"][aria-label*="like" i]',
-                  '[class*="LikeContainer"]',
-                  '[class*="ButtonLike"]'
+                  '[role="button"][aria-label*="thÃ­ch" i]',
+                  '[role="button"][aria-label*="ThÃ­ch" i]',
+                  'span[aria-label*="like" i]',
+                  'span[aria-label*="thÃ­ch" i]',
+                  'div[class*="LikeContainer"]',
+                  'button[class*="ButtonLike"]',
+                  'div[class*="ButtonActionItem"]'
                 ];
-                for (const s of selectors) {
-                  const el = Array.from(document.querySelectorAll(s)).find(isVisible);
-                  if (el) {
-                    const rect = el.getBoundingClientRect();
+
+                for (const selector of selectors) {
+                  const node = typeof selector === 'object'
+                    ? document.evaluate(
+                        selector.value,
+                        document,
+                        null,
+                        XPathResult.FIRST_ORDERED_NODE_TYPE,
+                        null
+                      ).singleNodeValue
+                    : Array.from(document.querySelectorAll(selector)).find(isVisible);
+                  if (!node) continue;
+                  const target = getClickableParent(node);
+                  const rect = target.getBoundingClientRect();
+                  if (!rect.width || !rect.height) continue;
+
+                  const alreadyLiked = isLikedControl(target) || isLikedControl(node);
+                  return {
+                    found: true,
+                    alreadyLiked,
+                    x: Math.round(rect.left + rect.width / 2),
+                    y: Math.round(rect.top + rect.height / 2),
+                    target: 'like-button',
+                    label: getLabel(target) || getLabel(node)
+                  };
+                }
+
+                const video = Array.from(document.querySelectorAll('video')).find(isVisible) ||
+                              Array.from(document.querySelectorAll('[data-e2e="browse-video"], [data-e2e="video-detail-container"], div[class*="VideoContainer"], div[class*="DivPlayerContainer"], div[class*="VideoWrapper"]')).find(isVisible);
+                if (video) {
+                  const rect = video.getBoundingClientRect();
+                  if (rect.width > 0 && rect.height > 0) {
                     return {
                       found: true,
+                      alreadyLiked: false,
                       x: Math.round(rect.left + rect.width / 2),
-                      y: Math.round(rect.top + rect.height / 2),
-                      target: 'like-button'
+                      y: Math.round(rect.top + rect.height * 0.56),
+                      target: 'video-dblclick',
+                      label: 'video'
                     };
                   }
                 }
-                const video = document.querySelector('video');
-                if (video) {
-                  const rect = video.getBoundingClientRect();
-                  return {
-                    found: true,
-                    x: Math.round(rect.left + rect.width / 2),
-                    y: Math.round(rect.top + rect.height * 0.5),
-                    target: 'video-dblclick'
-                  };
-                }
-                return { found: false };
-              } catch(e) { return { found: false, error: e.toString() }; }
-            })()
+
+                return { found: false, alreadyLiked: false, target: null };
+              } catch(e) {
+                return { found: false, alreadyLiked: false, target: null, error: e.toString() };
+              }
+            })();
           `);
 
-          // Direct click via DOM + CDP click
-          await win.webContents.executeJavaScript(`
-            (() => {
-              try {
-                const isVisible = (el) => {
-                  if (!el) return false;
-                  const rect = el.getBoundingClientRect();
-                  const style = window.getComputedStyle(el);
-                  return rect.width > 0 && rect.height > 0 && style.visibility !== 'hidden' && style.display !== 'none';
-                };
-                const selectors = [
-                  '[data-e2e="like-icon"]',
-                  '[data-e2e="browse-like-icon"]',
-                  '[data-e2e="video-like-icon"]',
-                  '[data-e2e="feed-like"]',
-                  'button[aria-label*="like" i]',
-                  'button[aria-label*="thích" i]',
-                  'button[aria-label*="Thích" i]',
-                  '[role="button"][aria-label*="like" i]',
-                  '[class*="LikeContainer"]',
-                  '[class*="ButtonLike"]'
-                ];
-                for (const s of selectors) {
-                  const el = Array.from(document.querySelectorAll(s)).find(isVisible);
-                  if (el) {
-                    const btn = el.closest('button') || el;
-                    btn.click();
-                    return true;
-                  }
-                }
-                const video = document.querySelector('video');
-                if (video) {
-                  video.dispatchEvent(new MouseEvent('dblclick', { bubbles: true, cancelable: true }));
-                }
-              } catch (e) {}
-            })()
-          `).catch(() => {});
+          if (likeTarget?.alreadyLiked) {
+            likeResult = { attempted: false, alreadyLiked: true, target: likeTarget.target, attempt };
+            break;
+          }
 
-          if (likeTarget?.found && typeof likeTarget.x === 'number') {
-            await performCdpClick(win, likeTarget.x, likeTarget.y).catch(() => {});
+          if (!likeTarget?.found || typeof likeTarget.x !== 'number' || typeof likeTarget.y !== 'number') {
+            likeResult = { attempted: false, alreadyLiked: false, target: null, attempt, error: likeTarget?.error };
+            await new Promise(res => setTimeout(res, 700));
+            continue;
+          }
+
+          const zoomFactor = win.webContents.getZoomFactor();
+          const clickX = Math.round(likeTarget.x * zoomFactor);
+          const clickY = Math.round(likeTarget.y * zoomFactor);
+
+          if (likeTarget.target === 'video-dblclick') {
+            win.webContents.sendInputEvent({ type: 'mouseDown', x: clickX, y: clickY, button: 'left', clickCount: 1 });
+            win.webContents.sendInputEvent({ type: 'mouseUp', x: clickX, y: clickY, button: 'left', clickCount: 1 });
+            await new Promise(res => setTimeout(res, 80));
+            win.webContents.sendInputEvent({ type: 'mouseDown', x: clickX, y: clickY, button: 'left', clickCount: 2 });
+            win.webContents.sendInputEvent({ type: 'mouseUp', x: clickX, y: clickY, button: 'left', clickCount: 2 });
+          } else {
+            win.webContents.sendInputEvent({ type: 'mouseDown', x: clickX, y: clickY, button: 'left', clickCount: 1 });
+            win.webContents.sendInputEvent({ type: 'mouseUp', x: clickX, y: clickY, button: 'left', clickCount: 1 });
           }
 
           let likeStateAfterClick: any = { liked: false };
-          for (const waitMs of [500, 800, 1000]) {
+          for (const waitMs of [700, 900, 1200]) {
             await new Promise(res => setTimeout(res, waitMs));
             likeStateAfterClick = await readVideoLikeState();
             if (likeStateAfterClick?.liked) {
-              likeResult = { attempted: true, verified: true, alreadyLiked: false, target: likeTarget?.target || 'like-button', attempt };
+              likeResult = { attempted: true, verified: true, alreadyLiked: false, target: likeTarget.target, attempt };
               break;
             }
           }
 
-          if (likeResult?.verified) break;
-          likeResult = { attempted: true, verified: false, alreadyLiked: false, target: likeTarget?.target || 'like-button', attempt };
-          await new Promise(res => setTimeout(res, 500));
+          if (likeResult?.verified) {
+            break;
+          }
+
+          likeResult = { attempted: true, verified: false, alreadyLiked: false, target: likeTarget.target, attempt };
+          await new Promise(res => setTimeout(res, 700));
         }
 
-        if (likeResult?.verified) {
+        if (likeResult?.alreadyLiked) {
           onLog({
             accountId: acc.id,
             accountUsername: acc.username,
-            level: 'success',
-            message: `❤️ Đã xác nhận video được thả tim qua ${likeResult.target}.`,
+            level: 'info',
+            message: `â¤ï¸ Video Ä‘Ã£ Ä‘Æ°á»£c tháº£ tim sáºµn, bá» qua Ä‘á»ƒ trÃ¡nh báº¥m láº¡i thÃ nh bá» tim.`,
+          });
+        } else if (likeResult?.attempted) {
+          onLog({
+            accountId: acc.id,
+            accountUsername: acc.username,
+            level: likeResult?.verified ? 'success' : 'warning',
+            message: likeResult?.verified
+              ? `â¤ï¸ ÄÃ£ xÃ¡c nháº­n video Ä‘Æ°á»£c tháº£ tim qua ${likeResult.target}.`
+              : `ÄÃ£ thá»­ tháº£ tim video qua ${likeResult.target} nhÆ°ng chÆ°a tháº¥y icon Ä‘á»•i sang mÃ u tim sau ${likeResult.attempt || 0} láº§n thá»­.`,
           });
         } else {
           onLog({
             accountId: acc.id,
             accountUsername: acc.username,
-            level: 'info',
-            message: '❤️ Đã gửi thao tác thả tim video.',
+            level: 'warning',
+            message: `KhÃ´ng tÃ¬m tháº¥y nÃºt/vÃ¹ng video Ä‘á»ƒ tháº£ tim cho @${acc.username}.`,
           });
         }
       }
-
-      await checkAndSolveAnyCaptcha(win, acc, onLog);
-      throwIfSeedingCancelled(win);
 
       if (config.comments && config.comments.length > 0) {
         const commentText = config.comments[Math.floor(Math.random() * config.comments.length)].trim();
@@ -3511,28 +3653,36 @@ async function executeTaskForAccount(
             accountId: acc.id,
             accountUsername: acc.username,
             level: 'info',
-            message: `Đang tự động gõ bình luận: "${commentText}"...`,
+            message: `Äang tá»± Ä‘á»™ng gÃµ bÃ¬nh luáº­n: "${commentText}"...`,
           });
 
-          await new Promise(res => setTimeout(res, 1500));
+          await new Promise(res => setTimeout(res, 2500));
 
           const focusResult = await win.webContents.executeJavaScript(`
             (async () => {
               try {
+                const closeBtns = document.querySelectorAll('[aria-label="Close"], [data-e2e="modal-close-icon"]');
+                closeBtns.forEach(btn => {
+                  try { (btn).click(); } catch(e) {}
+                });
+                await new Promise(r => setTimeout(r, 500));
+
                 const commentIcon = document.querySelector('[data-e2e="comment-icon"]') ||
                                     document.querySelector('span[aria-label*="comment" i]') ||
                                     document.querySelector('button[aria-label*="comment" i]');
                 if (commentIcon) {
                   commentIcon.click();
-                  await new Promise(r => setTimeout(r, 400));
+                  await new Promise(r => setTimeout(r, 600));
                 }
+
+                window.scrollBy(0, 400);
+                await new Promise(r => setTimeout(r, 800));
 
                 const selectors = [
                   '[data-e2e="comment-input"]',
                   'div[contenteditable="true"]',
                   '[role="textbox"]',
-                  '[data-e2e="comment-input-area"]',
-                  'textarea'
+                  '[data-e2e="comment-input-area"]'
                 ];
 
                 let input = null;
@@ -3546,9 +3696,10 @@ async function executeTaskForAccount(
 
                 if (input) {
                   input.scrollIntoView({ behavior: 'smooth', block: 'center' });
-                  await new Promise(r => setTimeout(r, 300));
+                  await new Promise(r => setTimeout(r, 400));
                   input.click();
                   input.focus();
+                  await new Promise(r => setTimeout(r, 500));
                   return { success: true };
                 }
 
@@ -3560,46 +3711,15 @@ async function executeTaskForAccount(
           `);
 
           if (focusResult && focusResult.success) {
-            await waitForSeedingDelay(300, win);
+            await waitForSeedingDelay(600, win);
 
-            await win.webContents.executeJavaScript(`
-              (() => {
-                try {
-                  const input = document.querySelector('[data-e2e="comment-input"], div[contenteditable="true"], [role="textbox"], textarea');
-                  if (input) {
-                    input.focus();
-                    document.execCommand('insertText', false, ${JSON.stringify(commentText)});
-                    input.dispatchEvent(new Event('input', { bubbles: true }));
-                    input.dispatchEvent(new Event('change', { bubbles: true }));
-                  }
-                } catch(e) {}
-              })()
-            `);
+            for (const char of commentText) {
+              throwIfSeedingCancelled(win);
+              win.webContents.sendInputEvent({ type: 'char', keyCode: char });
+              await waitForSeedingDelay(40 + Math.random() * 40, win);
+            }
 
-            await waitForSeedingDelay(500, win);
-
-            await win.webContents.executeJavaScript(`
-              (() => {
-                try {
-                  const sendBtns = [
-                    '[data-e2e="comment-post"]',
-                    'div[data-e2e="comment-post"]',
-                    'button[data-e2e="comment-post"]',
-                    '[aria-label*="Post" i]',
-                    '[aria-label*="Đăng" i]',
-                    '[class*="DivPostButton"]',
-                    '[class*="PostBtn"]'
-                  ];
-                  for (const sel of sendBtns) {
-                    const btn = document.querySelector(sel);
-                    if (btn && btn.offsetWidth > 0) {
-                      btn.click();
-                      return true;
-                    }
-                  }
-                } catch(e) {}
-              })()
-            `);
+            await waitForSeedingDelay(1000, win);
 
             win.webContents.sendInputEvent({ type: 'keyDown', keyCode: 'Enter' });
             win.webContents.sendInputEvent({ type: 'keyUp', keyCode: 'Enter' });
@@ -3608,11 +3728,12 @@ async function executeTaskForAccount(
               accountId: acc.id,
               accountUsername: acc.username,
               level: 'info',
-              message: `💬 Đã nhập và gửi yêu cầu bình luận video: "${commentText}".`,
+              message: `ðŸ’¬ ÄÃ£ nháº­p vÃ  gá»­i yÃªu cáº§u bÃ¬nh luáº­n video: "${commentText}". TikTok chÆ°a xÃ¡c nháº­n bÃ¬nh luáº­n Ä‘Ã£ hiá»ƒn thá»‹.`,
             });
           }
         }
       }
+      });
     } else if (config.targetType === 'livestream') {
       const liveDurationSeconds = Math.max(10, config.liveDurationSeconds || 60);
 
@@ -3620,61 +3741,217 @@ async function executeTaskForAccount(
         accountId: acc.id,
         accountUsername: acc.username,
         level: 'info',
-        message: `Đang giữ livestream ${liveDurationSeconds}s cho @${acc.username}${config.likeEnabled ? ' và tap live liên tục...' : '...'}`,
+        message: `Äang giá»¯ livestream ${liveDurationSeconds}s cho @${acc.username}${config.likeEnabled ? ' vÃ  tap live liÃªn tá»¥c...' : '...'}`,
       });
 
       const liveLikeWarmupPromise = config.likeEnabled && config.comments && config.comments.length > 0
         ? tapLiveContinuously(win, acc, Math.min(8, liveDurationSeconds), onLog, 'warmup')
         : Promise.resolve(0);
 
-      await checkAndSolveAnyCaptcha(win, acc, onLog);
-      throwIfSeedingCancelled(win);
       if (config.comments && config.comments.length > 0) {
         onLog({
           accountId: acc.id,
           accountUsername: acc.username,
           level: 'info',
-          message: `⏳ Vừa vào Livestream, đang chờ ${Math.round(LIVESTREAM_INITIAL_COMMENT_DELAY_MS / 1000)}s trước khi bắt đầu bình luận cho @${acc.username}...`,
+          message: `â³ Vá»«a vÃ o Livestream, Ä‘ang chá» ${Math.round(LIVESTREAM_INITIAL_COMMENT_DELAY_MS / 1000)}s trÆ°á»›c khi báº¯t Ä‘áº§u bÃ¬nh luáº­n cho @${acc.username}...`,
         });
         await waitForSeedingDelay(LIVESTREAM_INITIAL_COMMENT_DELAY_MS, win);
         await liveLikeWarmupPromise.catch(() => 0);
         throwIfSeedingCancelled(win);
+      }
 
+      await runSeedingInteraction(async () => {
+        if (!win.isDestroyed()) {
+          await waitForSeedingDelay(150, win);
+        }
+        throwIfSeedingCancelled(win);
+
+      if (config.comments && config.comments.length > 0) {
         const liveCommentText = config.comments[Math.floor(Math.random() * config.comments.length)].trim();
         if (liveCommentText) {
           onLog({
             accountId: acc.id,
             accountUsername: acc.username,
             level: 'info',
-            message: `Đang tìm ô bình luận Live để gửi: "${liveCommentText}"...`,
+            message: `Äang tÃ¬m Ã´ bÃ¬nh luáº­n Live Ä‘á»ƒ gá»­i: "${liveCommentText}"...`,
           });
 
-          await win.webContents.executeJavaScript(`
-            (() => {
+          const focusLiveComment = await win.webContents.executeJavaScript(`
+            (async () => {
               try {
-                const input = document.querySelector('[data-e2e="room-chat-input-field"], div[contenteditable="true"], [role="textbox"], textarea');
-                if (input) {
-                  input.focus();
-                  document.execCommand('insertText', false, ${JSON.stringify(liveCommentText)});
-                  input.dispatchEvent(new Event('input', { bubbles: true }));
+                const isVisible = (el) => {
+                  const rect = el.getBoundingClientRect();
+                  const style = window.getComputedStyle(el);
+                  return rect.width > 0 && rect.height > 0 && style.visibility !== 'hidden' && style.display !== 'none';
+                };
+
+                const clickByText = (patterns) => {
+                  const target = Array.from(document.querySelectorAll('button, [role="button"], [aria-label], div, span')).find(el => {
+                    if (!isVisible(el)) return false;
+                    const label = [
+                      el.getAttribute('aria-label'),
+                      el.getAttribute('data-e2e'),
+                      el.getAttribute('title'),
+                      el.textContent
+                    ].join(' ').toLowerCase();
+                    return patterns.some(pattern => label.includes(pattern));
+                  });
+                  if (target) {
+                    target.click();
+                    return true;
+                  }
+                  return false;
+                };
+
+                const scrollHorizontally = (side) => {
+                  const maxed = [];
+                  if (document.scrollingElement) {
+                    document.scrollingElement.scrollLeft = side === 'right'
+                      ? document.scrollingElement.scrollWidth
+                      : 0;
+                  }
+                  Array.from(document.querySelectorAll('*'))
+                    .filter(el => el.scrollWidth > el.clientWidth + 80)
+                    .slice(0, 12)
+                    .forEach(el => {
+                      try {
+                        el.scrollLeft = side === 'right' ? el.scrollWidth : 0;
+                        maxed.push(el.tagName);
+                      } catch(e) {}
+                    });
+                  return maxed.length;
+                };
+
+                const findInput = () => {
+                  // Priority 1: Exact selector room-chat-input-field
+                  const exactInput = document.querySelector('[data-e2e="room-chat-input-field"]');
+                  if (exactInput && isVisible(exactInput)) return exactInput;
+
+                  // Priority 2: General query with contenteditable="plaintext-only" and data-e2e
+                  const allInputs = Array.from(document.querySelectorAll(
+                    '[data-e2e="room-chat-input-field"], [data-e2e="comment-input"], textarea, input[type="text"], input:not([type]), div[contenteditable], [role="textbox"], [data-e2e*="comment"], [data-e2e*="chat"]'
+                  )).filter(el => {
+                    if (!isVisible(el) || el.disabled || el.readOnly) return false;
+                    const label = [
+                      el.getAttribute('placeholder'),
+                      el.getAttribute('aria-label'),
+                      el.getAttribute('data-e2e'),
+                      el.getAttribute('class'),
+                      el.textContent
+                    ].join(' ').toLowerCase();
+                    return label.includes('comment') ||
+                           label.includes('chat') ||
+                           label.includes('message') ||
+                           label.includes('say') ||
+                           label.includes('bÃ¬nh luáº­n') ||
+                           label.includes('nháº¯n') ||
+                           label.includes('write') ||
+                           label.includes('input') ||
+                           el.tagName === 'TEXTAREA' ||
+                           el.hasAttribute('contenteditable') ||
+                           el.getAttribute('role') === 'textbox';
+                  });
+                  return allInputs.sort((a, b) => {
+                    const ar = a.getBoundingClientRect();
+                    const br = b.getBoundingClientRect();
+                    return (br.left + br.top) - (ar.left + ar.top);
+                  })[0] || null;
+                };
+
+                clickByText(['comment', 'chat', 'bÃ¬nh luáº­n', 'message']);
+                await new Promise(r => setTimeout(r, 500));
+
+                let input = findInput();
+                if (!input) {
+                  scrollHorizontally('right');
+                  await new Promise(r => setTimeout(r, 500));
+                  clickByText(['comment', 'chat', 'bÃ¬nh luáº­n', 'message']);
+                  await new Promise(r => setTimeout(r, 500));
+                  input = findInput();
                 }
-                const sendBtn = document.querySelector('[data-e2e="room-chat-send-btn"]');
-                if (sendBtn) sendBtn.click();
-              } catch(e) {}
-            })()
+                if (!input) {
+                  scrollHorizontally('left');
+                  await new Promise(r => setTimeout(r, 300));
+                  input = findInput();
+                }
+
+                const totalInputs = document.querySelectorAll('textarea, input, div[contenteditable], [role="textbox"]').length;
+                if (!input) return { success: false, reason: 'KhÃ´ng tháº¥y Ã´ chat/comment Live. Tá»•ng input/textbox trÃªn DOM: ' + totalInputs };
+
+                input.scrollIntoView({ behavior: 'instant', block: 'center', inline: 'center' });
+                await new Promise(r => setTimeout(r, 250));
+                input.click();
+                input.focus();
+                return { success: true };
+              } catch(e) {
+                return { success: false, reason: e.toString() };
+              }
+            })();
           `);
 
-          win.webContents.sendInputEvent({ type: 'keyDown', keyCode: 'Enter' });
-          win.webContents.sendInputEvent({ type: 'keyUp', keyCode: 'Enter' });
+          if (focusLiveComment && focusLiveComment.success) {
+            for (const char of liveCommentText) {
+              throwIfSeedingCancelled(win);
+              win.webContents.sendInputEvent({ type: 'char', keyCode: char });
+              await waitForSeedingDelay(35 + Math.random() * 35, win);
+            }
+            await waitForSeedingDelay(500, win);
+            win.webContents.sendInputEvent({ type: 'keyDown', keyCode: 'Enter' });
+            win.webContents.sendInputEvent({ type: 'keyUp', keyCode: 'Enter' });
 
-          onLog({
-            accountId: acc.id,
-            accountUsername: acc.username,
-            level: 'info',
-            message: `💬 Đã click nút gửi bình luận Live: "${liveCommentText}".`,
-          });
+            // Send via room-chat-send-btn if present
+            const liveSendResult = await win.webContents.executeJavaScript(`
+              (() => {
+                try {
+                  const sendBtn = document.querySelector('[data-e2e="room-chat-send-btn"]');
+                  const input = document.querySelector('[data-e2e="room-chat-input-field"]');
+                  const inputText = (input?.textContent || input?.innerText || '').trim();
+                  const sendBtnVisible = !!sendBtn && sendBtn.offsetWidth > 0 && sendBtn.offsetHeight > 0;
+                  const sendBtnClass = sendBtn?.getAttribute('class') || '';
+                  const isProbablyDisabled = sendBtnClass.includes('invisible') ||
+                                            sendBtnClass.includes('cursor-not-allowed') ||
+                                            sendBtn?.getAttribute('aria-disabled') === 'true';
+
+                  if (sendBtnVisible && !isProbablyDisabled) {
+                    sendBtn.click();
+                    return {
+                      clicked: true,
+                      sendBtnVisible,
+                      isProbablyDisabled,
+                      inputTextLength: inputText.length
+                    };
+                  }
+
+                  return {
+                    clicked: false,
+                    sendBtnVisible,
+                    isProbablyDisabled,
+                    inputTextLength: inputText.length
+                  };
+                } catch(e) {}
+                return { clicked: false, error: 'KhÃ´ng kiá»ƒm tra Ä‘Æ°á»£c nÃºt gá»­i Live.' };
+              })();
+            `);
+
+            onLog({
+              accountId: acc.id,
+              accountUsername: acc.username,
+              level: liveSendResult?.clicked ? 'info' : 'warning',
+              message: liveSendResult?.clicked
+                ? `ðŸ’¬ ÄÃ£ click nÃºt gá»­i bÃ¬nh luáº­n Live: "${liveCommentText}". TikTok chÆ°a xÃ¡c nháº­n bÃ¬nh luáº­n Ä‘Ã£ hiá»ƒn thá»‹.`
+                : `KhÃ´ng click Ä‘Æ°á»£c nÃºt gá»­i Live cho @${acc.username}. NÃºt gá»­i: ${liveSendResult?.sendBtnVisible ? 'cÃ³ hiá»‡n' : 'khÃ´ng hiá»‡n'}, tráº¡ng thÃ¡i: ${liveSendResult?.isProbablyDisabled ? 'chÆ°a sáºµn sÃ ng' : 'khÃ´ng rÃµ'}, text trong Ã´: ${liveSendResult?.inputTextLength ?? 0} kÃ½ tá»±.`,
+            });
+          } else {
+            onLog({
+              accountId: acc.id,
+              accountUsername: acc.username,
+              level: 'warning',
+              message: `KhÃ´ng gá»­i Ä‘Æ°á»£c bÃ¬nh luáº­n Live cho @${acc.username}: ${focusLiveComment?.reason || 'khÃ´ng tÃ¬m tháº¥y Ã´ bÃ¬nh luáº­n'}`,
+            });
+          }
         }
       }
+      });
 
       if (config.likeEnabled) {
         await tapLiveContinuously(win, acc, liveDurationSeconds, onLog, 'main');
@@ -3683,13 +3960,8 @@ async function executeTaskForAccount(
       }
     }
 
-    const stabilizeDeadline = Date.now() + SEEDING_POST_ACTION_STABILIZE_MS;
-    while (Date.now() < stabilizeDeadline) {
-      throwIfSeedingCancelled(win);
-      await checkAndSolveAnyCaptcha(win, acc, onLog);
-      await waitForSeedingDelay(1500, win);
-    }
-
+    await waitForSeedingDelay(SEEDING_POST_ACTION_STABILIZE_MS, win);
+    throwIfSeedingCancelled(win);
     // Final safety check: if Captcha is still on screen, keep window open and solve before closing
     let safetyRetries = 0;
     while (safetyRetries < 3) {
@@ -3701,7 +3973,7 @@ async function executeTaskForAccount(
               if (!el) return false;
               const rect = el.getBoundingClientRect();
               const style = window.getComputedStyle(el);
-              return rect.width > 20 && rect.height > 20 && style.visibility !== 'hidden' && style.display !== 'none' && style.opacity !== '0';
+              return rect.width > 20 && rect.height > 20 && style.visibility !== 'hidden' && style.display !== 'none';
             };
             const selectors = [
               '#captcha-verify-container', '.captcha-verify-container',

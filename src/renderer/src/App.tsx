@@ -978,6 +978,22 @@ export default function App() {
                               >
                                 🔑 Mở Chrome
                               </button>
+                              <button
+                                className="btn-secondary"
+                                style={{ padding: '0.3rem 0.6rem', fontSize: '0.75rem', marginRight: '0.4rem', color: '#a855f7' }}
+                                onClick={() => handleTestGenerate2FA(acc)}
+                                title="Tính toán thử nghiệm mã 2FA TOTP 6 số"
+                              >
+                                🔑 2FA
+                              </button>
+                              <button
+                                className="btn-secondary"
+                                style={{ padding: '0.3rem 0.6rem', fontSize: '0.75rem', marginRight: '0.4rem', color: '#fbbf24' }}
+                                onClick={() => handleTestFetchOtp(acc)}
+                                title="Thử nghiệm đọc OTP 6 số từ hòm thư"
+                              >
+                                📬 OTP
+                              </button>
 
                               <button
                                 className="btn-secondary"
@@ -1298,84 +1314,46 @@ export default function App() {
                 />
               </div>
 
-              {isTaskExecuting ? (
-                <div style={{ display: 'flex', gap: '0.75rem', marginTop: '1rem' }}>
-                  <button
-                    className="btn-primary"
-                    style={{ flex: 1, padding: '1rem', fontSize: '1rem', opacity: 0.85, cursor: 'not-allowed' }}
-                    disabled={true}
-                  >
-                    ⏳ Đang chạy Seeding ({selectedAccountIds.length} Acc)...
-                  </button>
-                  <button
-                    className="btn-danger"
-                    style={{
-                      padding: '1rem 1.5rem',
-                      fontSize: '1rem',
-                      background: '#ef4444',
-                      color: '#fff',
-                      borderRadius: '8px',
-                      border: 'none',
-                      cursor: 'pointer',
-                      fontWeight: 'bold',
-                      display: 'flex',
-                      alignItems: 'center',
-                      gap: '0.5rem',
-                      whiteSpace: 'nowrap'
-                    }}
-                    onClick={async () => {
-                      try {
-                        if (window.electronAPI?.closeAllBrowserWindows) {
-                          await window.electronAPI.closeAllBrowserWindows();
-                        }
-                      } finally {
-                        setIsTaskExecuting(false);
-                      }
-                    }}
-                  >
-                    🛑 Dừng ngay
-                  </button>
-                </div>
-              ) : (
-                <button
-                  className="btn-primary"
-                  style={{ marginTop: '1rem', padding: '1rem', fontSize: '1rem' }}
-                  onClick={async () => {
-                    if (selectedAccountIds.length === 0) {
-                      alert('Vui lòng chọn ít nhất 1 tài khoản ở Tab 1!');
-                      return;
+              <button
+                className="btn-primary"
+                style={{ marginTop: '1rem', padding: '1rem', fontSize: '1rem' }}
+                disabled={isTaskExecuting}
+                onClick={async () => {
+                  if (selectedAccountIds.length === 0) {
+                    alert('Vui lòng chọn ít nhất 1 tài khoản ở Tab 1!');
+                    return;
+                  }
+                  setIsTaskExecuting(true);
+                  setActiveTab('logs');
+                  try {
+                    if (window.electronAPI?.executeSeedingTask) {
+                      const selectedAccs = accounts.filter(a => selectedAccountIds.includes(a.id));
+                      const seedingThreadCount = seedingThreads === 0 ? selectedAccountIds.length : seedingThreads;
+                      await window.electronAPI.executeSeedingTask(
+                        {
+                          targetUrl,
+                          targetType,
+                          accountIds: selectedAccountIds,
+                          likeEnabled,
+                          comments: commentsInput.split('\n').filter(c => c.trim().length > 0),
+                          delaySeconds,
+                          maxThreads: seedingThreadCount,
+                          liveDurationSeconds,
+                          muteBrowserAudio,
+                        },
+                        selectedAccs
+                      );
                     }
-                    setIsTaskExecuting(true);
-                    setActiveTab('logs');
-                    try {
-                      if (window.electronAPI?.executeSeedingTask) {
-                        const selectedAccs = accounts.filter(a => selectedAccountIds.includes(a.id));
-                        const seedingThreadCount = seedingThreads === 0 ? selectedAccountIds.length : seedingThreads;
-                        await window.electronAPI.executeSeedingTask(
-                          {
-                            targetUrl,
-                            targetType,
-                            accountIds: selectedAccountIds,
-                            likeEnabled,
-                            comments: commentsInput.split('\n').filter(c => c.trim().length > 0),
-                            delaySeconds,
-                            maxThreads: seedingThreadCount,
-                            liveDurationSeconds,
-                            muteBrowserAudio,
-                          },
-                          selectedAccs
-                        );
-                      }
-                    } catch (err) {
-                      console.error('Seeding task failed:', err);
-                    } finally {
-                      setIsTaskExecuting(false);
-                    }
-                  }}
-                >
-                  🚀 Bắt đầu Seeding ngay ({selectedAccountIds.length} Acc)
-                </button>
-              )}
+                  } catch (err) {
+                    console.error('Seeding task failed:', err);
+                    alert('Tác vụ Seeding đã dừng hoặc gặp lỗi. Vui lòng kiểm tra nhật ký để biết chi tiết.');
+                  } finally {
+                    setIsTaskExecuting(false);
+                  }
+                }}
+              >
+                {isTaskExecuting ? '⏳ Đang khởi chạy Seeding...' : '🚀 Bắt đầu Seeding ngay (' + selectedAccountIds.length + ' Acc)'}
+              </button>
             </div>
           </div>
         )}
