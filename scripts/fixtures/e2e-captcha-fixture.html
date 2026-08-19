@@ -1,0 +1,182 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>TikTok Captcha Test Fixture</title>
+    <style>
+      body {
+        margin: 0;
+        padding: 0;
+        background: rgba(0, 0, 0, 0.6);
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        height: 100vh;
+      }
+      .captcha-modal {
+        background: #ffffff;
+        border-radius: 12px;
+        width: 340px;
+        padding: 16px;
+        box-shadow: 0 10px 30px rgba(0,0,0,0.3);
+        box-sizing: border-box;
+      }
+      .captcha-header {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        margin-bottom: 12px;
+      }
+      .captcha-title {
+        font-size: 15px;
+        font-weight: 600;
+        color: #161823;
+      }
+      .captcha-tip {
+        font-size: 13px;
+        color: #666;
+        margin-bottom: 12px;
+      }
+      .captcha-img-wrap {
+        position: relative;
+        width: 308px;
+        height: 172px;
+        border-radius: 8px;
+        overflow: hidden;
+        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+      }
+      canvas#captcha-canvas {
+        width: 308px;
+        height: 172px;
+        display: block;
+      }
+      .slider-track {
+        position: relative;
+        width: 308px;
+        height: 40px;
+        background: #f1f1f2;
+        border-radius: 20px;
+        margin-top: 14px;
+        display: flex;
+        align-items: center;
+        border: 1px solid #e3e3e4;
+      }
+      .slider-btn {
+        position: absolute;
+        left: 0px;
+        width: 44px;
+        height: 44px;
+        background: #fe2c55;
+        border-radius: 50%;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        color: white;
+        cursor: pointer;
+        box-shadow: 0 2px 8px rgba(254, 44, 85, 0.4);
+        user-select: none;
+      }
+      .verify-btn {
+        margin-top: 14px;
+        width: 100%;
+        height: 40px;
+        background: #fe2c55;
+        color: white;
+        border: none;
+        border-radius: 6px;
+        font-weight: 600;
+        cursor: pointer;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="captcha-verify-container" class="captcha-modal">
+      <div class="captcha-header">
+        <span class="captcha-title" id="captcha-title">Xác minh bảo mật</span>
+      </div>
+      <div class="captcha-tip" id="captcha-tip">Kéo thanh trượt để khớp mảnh ghép</div>
+      <div class="captcha-img-wrap">
+        <canvas id="captcha-canvas" width="308" height="172"></canvas>
+      </div>
+      <div class="slider-track" id="slider-track">
+        <div class="slider-btn" id="slider-btn" role="slider" aria-valuenow="0">➔</div>
+      </div>
+      <button type="button" class="verify-btn" id="verify-submit-btn">Xác nhận</button>
+    </div>
+
+    <script>
+      window.__solvedEvents = {
+        draggedEndX: 0,
+        dragSteps: 0,
+        clickedPoints: [],
+        submitted: false
+      };
+
+      const canvas = document.getElementById('captcha-canvas');
+      const ctx = canvas.getContext('2d');
+
+      // Draw background challenge image
+      function drawSliderChallenge() {
+        const grad = ctx.createLinearGradient(0, 0, 308, 172);
+        grad.addColorStop(0, '#2c3e50');
+        grad.addColorStop(0.5, '#3498db');
+        grad.addColorStop(1, '#2ecc71');
+        ctx.fillStyle = grad;
+        ctx.fillRect(0, 0, 308, 172);
+
+        // Draw scenery shapes
+        ctx.fillStyle = '#ffffff33';
+        ctx.beginPath();
+        ctx.arc(80, 60, 40, 0, Math.PI * 2);
+        ctx.fill();
+
+        ctx.fillStyle = '#f39c12';
+        ctx.fillRect(180, 80, 50, 50);
+
+        // Draw puzzle hole target around x = 180, y = 80
+        ctx.strokeStyle = '#ffffff';
+        ctx.lineWidth = 3;
+        ctx.strokeRect(180, 80, 44, 44);
+        ctx.fillStyle = '#00000066';
+        ctx.fillRect(180, 80, 44, 44);
+      }
+      drawSliderChallenge();
+
+      const sliderBtn = document.getElementById('slider-btn');
+      let isDragging = false;
+      let startMouseX = 0;
+      let currentX = 0;
+
+      sliderBtn.addEventListener('mousedown', e => {
+        isDragging = true;
+        startMouseX = e.clientX;
+      });
+
+      window.addEventListener('mousemove', e => {
+        if (!isDragging) return;
+        const delta = e.clientX - startMouseX;
+        currentX = Math.max(0, Math.min(264, delta));
+        sliderBtn.style.left = currentX + 'px';
+        window.__solvedEvents.dragSteps++;
+        window.__solvedEvents.draggedEndX = currentX;
+      });
+
+      window.addEventListener('mouseup', () => {
+        if (isDragging) {
+          isDragging = false;
+        }
+      });
+
+      canvas.addEventListener('click', e => {
+        const rect = canvas.getBoundingClientRect();
+        const pt = { x: Math.round(e.clientX - rect.left), y: Math.round(e.clientY - rect.top) };
+        window.__solvedEvents.clickedPoints.push(pt);
+      });
+
+      document.getElementById('verify-submit-btn').addEventListener('click', () => {
+        window.__solvedEvents.submitted = true;
+      });
+    </script>
+  </body>
+</html>

@@ -6,7 +6,7 @@ const appUserData = process.env.APPDATA
   : undefined;
 if (appUserData) app.setPath('userData', appUserData);
 
-const targetUrl = process.env.E2E_TIKTOK_URL || 'https://www.tiktok.com/@saraiqballl/video/7653276096569396513?is_from_webapp=1&sender_device=pc';
+const targetUrl = process.env.E2E_TIKTOK_URL || 'https://www.tiktok.com/@misspiggsy/video/7658119499597532430?is_from_webapp=1&sender_device=pc';
 
 function delay(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));

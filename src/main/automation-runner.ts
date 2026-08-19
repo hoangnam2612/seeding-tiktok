@@ -999,14 +999,26 @@ async function loadTikTokUrlForSeeding(
 }
 
 function getOmoCaptchaApiKey(): string {
-  try {
-    const settingsPath = path.join(ensurePersistentDataDir(), 'settings.json');
-    if (!fs.existsSync(settingsPath)) return '';
-    const settings = JSON.parse(fs.readFileSync(settingsPath, 'utf-8'));
-    return String(settings.omocaptchaApiKey || '').trim();
-  } catch {
-    return '';
+  if (process.env.OMOCAPTCHA_API_KEY && process.env.OMOCAPTCHA_API_KEY.trim()) {
+    return process.env.OMOCAPTCHA_API_KEY.trim();
   }
+  const candidatePaths = [
+    path.join(ensurePersistentDataDir(), 'settings.json'),
+    path.join(process.cwd(), 'data', 'settings.json'),
+    path.join(process.env.APPDATA || '', 'electron-nest-react', 'data', 'settings.json'),
+    path.join(process.env.APPDATA || '', 'Seeding TikTok', 'data', 'settings.json'),
+  ];
+  for (const p of candidatePaths) {
+    try {
+      if (fs.existsSync(p)) {
+        const parsed = JSON.parse(fs.readFileSync(p, 'utf-8'));
+        if (parsed.omocaptchaApiKey && String(parsed.omocaptchaApiKey).trim()) {
+          return String(parsed.omocaptchaApiKey).trim();
+        }
+      }
+    } catch {}
+  }
+  return '';
 }
 
 async function postOmoCaptcha(payload: any): Promise<any> {
@@ -1018,312 +1030,861 @@ async function postOmoCaptcha(payload: any): Promise<any> {
   return res.json();
 }
 
+async function performCdpDrag(
+  win: BrowserWindow,
+  startX: number,
+  startY: number,
+  endX: number,
+  endY: number,
+  steps = 35
+) {
+  let needDetach = false;
+  if (!win.webContents.debugger.isAttached()) {
+    try {
+      win.webContents.debugger.attach('1.3');
+      needDetach = true;
+    } catch {}
+  }
+
+  try {
+    // 1. Move cursor to slider center
+    await win.webContents.debugger.sendCommand('Input.dispatchMouseEvent', {
+      type: 'mouseMoved',
+      x: startX,
+      y: startY,
+    });
+    await new Promise(r => setTimeout(r, 60));
+
+    // 2. Mouse Press
+    await win.webContents.debugger.sendCommand('Input.dispatchMouseEvent', {
+      type: 'mousePressed',
+      x: startX,
+      y: startY,
+      button: 'left',
+      buttons: 1,
+      clickCount: 1,
+    });
+    await new Promise(r => setTimeout(r, 80));
+
+    // 3. Humanized curve movement
+    for (let i = 1; i <= steps; i++) {
+      const t = i / steps;
+      const ease = 1 - Math.pow(1 - t, 3);
+      const curX = Math.round(startX + (endX - startX) * ease + (Math.random() * 2 - 1));
+      const curY = Math.round(startY + (endY - startY) * t + (Math.random() * 2 - 1));
+      await win.webContents.debugger.sendCommand('Input.dispatchMouseEvent', {
+        type: 'mouseMoved',
+        x: curX,
+        y: curY,
+        button: 'left',
+        buttons: 1,
+      });
+      await new Promise(r => setTimeout(r, 14 + Math.random() * 16));
+    }
+
+    await new Promise(r => setTimeout(r, 80));
+
+    // 4. Mouse Release
+    await win.webContents.debugger.sendCommand('Input.dispatchMouseEvent', {
+      type: 'mouseReleased',
+      x: endX,
+      y: endY,
+      button: 'left',
+      buttons: 0,
+    });
+  } catch (err) {
+    // Fallback to sendInputEvent if CDP fails
+    try {
+      win.webContents.sendInputEvent({ type: 'mouseMove', x: startX, y: startY });
+      win.webContents.sendInputEvent({ type: 'mouseDown', x: startX, y: startY, button: 'left', clickCount: 1 });
+      for (let i = 1; i <= steps; i++) {
+        const curX = Math.round(startX + (endX - startX) * (i / steps));
+        win.webContents.sendInputEvent({ type: 'mouseMove', x: curX, y: startY });
+        await new Promise(r => setTimeout(r, 15));
+      }
+      win.webContents.sendInputEvent({ type: 'mouseUp', x: endX, y: endY, button: 'left', clickCount: 1 });
+    } catch {}
+  }
+}
+
+async function performCdpClick(win: BrowserWindow, x: number, y: number) {
+  let needDetach = false;
+  if (!win.webContents.debugger.isAttached()) {
+    try {
+      win.webContents.debugger.attach('1.3');
+      needDetach = true;
+    } catch {}
+  }
+
+  try {
+    await win.webContents.debugger.sendCommand('Input.dispatchMouseEvent', {
+      type: 'mouseMoved',
+      x,
+      y,
+    });
+    await new Promise(r => setTimeout(r, 60));
+
+    await win.webContents.debugger.sendCommand('Input.dispatchMouseEvent', {
+      type: 'mousePressed',
+      x,
+      y,
+      button: 'left',
+      buttons: 1,
+      clickCount: 1,
+    });
+    await new Promise(r => setTimeout(r, 80));
+
+    await win.webContents.debugger.sendCommand('Input.dispatchMouseEvent', {
+      type: 'mouseReleased',
+      x,
+      y,
+      button: 'left',
+      buttons: 0,
+    });
+    await new Promise(r => setTimeout(r, 300));
+  } catch {
+    try {
+      win.webContents.sendInputEvent({ type: 'mouseMove', x, y });
+      win.webContents.sendInputEvent({ type: 'mouseDown', x, y, button: 'left', clickCount: 1 });
+      win.webContents.sendInputEvent({ type: 'mouseUp', x, y, button: 'left', clickCount: 1 });
+    } catch {}
+  }
+}
+
 async function solveTikTokWebCaptchaWithOmo(
   win: BrowserWindow,
   acc: { id: string; username: string },
   onLog: (log: Omit<TaskLogItem, 'id' | 'timestamp'>) => void
 ): Promise<boolean> {
-  const clientKey = getOmoCaptchaApiKey();
-  if (!clientKey) {
-    onLog({
-      accountId: acc.id,
-      accountUsername: acc.username,
-      level: 'warning',
-      message: '[Captcha] OmoCaptcha API key is empty. Manual TikTok captcha solving required.',
-    });
-    return false;
+  if (win.isDestroyed() || isSeedingCancelRequested()) return false;
+  const originalZoomFactor = win.webContents.getZoomFactor() || 1;
+  if (originalZoomFactor !== 1) {
+    win.webContents.setZoomFactor(1);
+    await waitForSeedingDelay(500, win).catch(() => undefined);
   }
 
-  const captchaInfo = await win.webContents.executeJavaScript(`
-    (() => {
-      try {
-        const isVisible = (el) => {
-          if (!el) return false;
-          const rect = el.getBoundingClientRect();
-          const style = window.getComputedStyle(el);
-          return rect.width > 80 && rect.height > 60 && style.visibility !== 'hidden' && style.display !== 'none';
-        };
-        const detectTaskType = (root) => {
-          const text = String((root?.innerText || '') + ' ' + (document.body?.innerText || '')).toLowerCase();
-          if (/3d|three[- ]?d|same object|same shape|matching object|hai doi tuong|2 doi tuong/.test(text)) {
+  try {
+    const clientKey = getOmoCaptchaApiKey();
+    if (!clientKey) {
+      onLog({
+        accountId: acc.id,
+        accountUsername: acc.username,
+        level: 'warning',
+        message: '[Captcha] ⚠️ API Key OmoCaptcha trống! Vui lòng cấu hình trong Cài Đặt để giải tự động.',
+      });
+      return false;
+    }
+
+    const maxAttempts = 3;
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    if (win.isDestroyed() || isSeedingCancelRequested()) return false;
+
+    if (attempt > 1) {
+      onLog({
+        accountId: acc.id,
+        accountUsername: acc.username,
+        level: 'info',
+        message: `[Captcha] 🔄 Thử giải lại CAPTCHA (Lần ${attempt}/${maxAttempts}) cho @${acc.username}...`,
+      });
+      await waitForSeedingDelay(1500, win);
+    }
+
+    const captchaData = await win.webContents.executeJavaScript(`
+      (async () => {
+        try {
+          const isVisible = (el) => {
+            if (!el) return false;
+            const rect = el.getBoundingClientRect();
+            const style = window.getComputedStyle(el);
+            return rect.width > 20 && rect.height > 20 && style.visibility !== 'hidden' && style.display !== 'none' && style.opacity !== '0';
+          };
+
+          const normalize = (s) => String(s || '').toLowerCase()
+            .normalize('NFD')
+            .replace(/[\\u0300-\\u036f]/g, '')
+            .replace(/đ/g, 'd')
+            .replace(/Đ/g, 'D')
+            .trim();
+
+          const isModalBox = (el) => {
+            if (!isVisible(el)) return false;
+            const r = el.getBoundingClientRect();
+            return r.width >= 200 && r.height >= 160 && r.width <= 750 && r.height <= 750;
+          };
+
+          const specificSelectors = [
+            '#captcha-verify-container',
+            '.captcha-verify-container',
+            '#captcha_verify_container',
+            '.captcha_verify_container',
+            '.sec-captcha-container',
+            '.captcha-container',
+            '.verify-wrap',
+            '[class*="captcha-card" i]',
+            '[class*="captcha-modal" i]',
+            '[class*="captcha_card" i]',
+            '[class*="captcha_modal" i]',
+            'iframe[src*="captcha"]',
+            'iframe[src*="sec"]',
+            'iframe[src*="verify"]',
+            'iframe[src*="challenge"]',
+            '[id*="captcha" i]',
+            '[class*="captcha" i]'
+          ];
+
+          const allCandidates = specificSelectors.flatMap(sel => Array.from(document.querySelectorAll(sel)));
+          let captchaBox = allCandidates.find(isModalBox);
+          if (!captchaBox) {
+            captchaBox = allCandidates.find(isVisible) || Array.from(document.querySelectorAll('iframe')).find(isVisible);
+          }
+
+          if (!captchaBox) return { found: false };
+
+          const boxRect = captchaBox.getBoundingClientRect();
+
+          const collectModalText = (root) => {
+            if (!root) return '';
+            let txt = (root.innerText || root.textContent || '') + ' ';
+            const textEls = Array.from(root.querySelectorAll('[class*="title" i], [class*="tip" i], [class*="header" i], [class*="instruction" i], [class*="text" i], [class*="prompt" i], [class*="msg" i]')).filter(isVisible);
+            textEls.forEach(el => { txt += ' ' + (el.innerText || el.textContent || ''); });
+            const iframes = Array.from(root.querySelectorAll('iframe')).filter(isVisible);
+            iframes.forEach(f => {
+              txt += ' ' + (f.title || f.getAttribute('aria-label') || '');
+            });
+            return normalize(txt);
+          };
+
+          // Check if a slider button exists inside the captcha box
+          const specificSliderSelectors = [
+            '.captcha_verify_slide--slidebtn',
+            '.sec-captcha-slider-btn',
+            '[class*="slidebtn" i]',
+            '[class*="slider-btn" i]',
+            '[class*="drag-btn" i]',
+            '[class*="sec-slider" i]',
+            '[class*="slider-thumb" i]',
+            '[role="slider"]',
+            'div[class*="btn" i][class*="slide" i]',
+            'div[class*="button" i][class*="slide" i]'
+          ];
+          let sliderEl = specificSliderSelectors
+            .flatMap(sel => Array.from(captchaBox.querySelectorAll(sel)))
+            .find(isVisible);
+
+          if (!sliderEl) {
+            const fallbackSliders = Array.from(captchaBox.querySelectorAll('div, span, button, [role="button"]')).filter(el => {
+              if (!isVisible(el)) return false;
+              const r = el.getBoundingClientRect();
+              return r.width >= 24 && r.width <= 65 && r.height >= 24 && r.height <= 65 &&
+                     r.top >= boxRect.bottom - 120 && r.bottom <= boxRect.bottom + 20;
+            });
+            sliderEl = fallbackSliders.sort((a, b) => a.getBoundingClientRect().left - b.getBoundingClientRect().left)[0];
+          }
+
+          const hasSlider = !!sliderEl;
+
+          const detectTaskType = (root) => {
+            const modalText = collectModalText(root);
+            const allImgs = Array.from(root.querySelectorAll('img')).filter(isVisible);
+            const hasTwoImages = allImgs.length >= 2;
+            const hasCircleOrRotateImg = !!root.querySelector(
+              '[class*="circle" i], [class*="round" i], [class*="rotate" i], img[class*="inner" i], img[class*="outer" i], div[style*="50%"], [id*="rotate" i]'
+            );
+            const hasRotateKeyword = /rotate|xoay|angle|upright|thang dung|dung chieu|goc quay|chieu dung|fit the shape|fit the puzzle|khop hinh/.test(modalText);
+
+            // If there is a slider button: it is either Rotate or Slider puzzle
+            if (hasSlider) {
+              if (hasCircleOrRotateImg || hasRotateKeyword || (hasTwoImages && modalText.includes('puzzle'))) {
+                return 'TiktokRotateWebTask';
+              }
+              return 'TiktokSliderWebTask';
+            }
+
+            // If there is NO slider button: it is a click/selection task (3D or Order)
+            if (/3d|three[- ]?d|same object|same shape|matching object|2 doi tuong|hai doi tuong|cung hinh|cung doi tuong|giong nhau|khop vat the|2 vat the|vat the giong/.test(modalText)) {
+              return 'Tiktok3DSelectObjectWebTask';
+            }
+            if (/select.*order|pick.*order|chon theo thu tu|chon doi tuong|chon vat the|chon hinh/.test(modalText)) {
+              return 'TiktokSelectObjectWebTask';
+            }
+            if (/select|choose|pick|chon/.test(modalText) && /object|vat the|hinh|doi tuong/.test(modalText)) {
+              return 'TiktokSelectObjectWebTask';
+            }
+
             return 'Tiktok3DSelectObjectWebTask';
-          }
-          if (/rotate|xoay|angle|match the shape|fit the shape/.test(text)) {
-            return 'TiktokRotateWebTask';
-          }
-          if (/select|choose|pick|object|chon|doi tuong|vat the/.test(text)) {
-            return 'TiktokSelectObjectWebTask';
-          }
-          return 'TiktokSliderWebTask';
-        };
+          };
 
-        const candidates = Array.from(document.querySelectorAll(
-          '#captcha-verify-container, .sec-captcha-container, [class*="captcha" i], [id*="captcha" i], iframe[src*="captcha"], iframe[src*="sec"]'
-        )).filter(isVisible);
-        const captcha = candidates.sort((a, b) => {
-          const ar = a.getBoundingClientRect();
-          const br = b.getBoundingClientRect();
-          return (br.width * br.height) - (ar.width * ar.height);
-        })[0];
-        if (!captcha) return { found: false };
+          const taskType = detectTaskType(captchaBox);
 
-        const rect = captcha.getBoundingClientRect();
-        const slider = Array.from(document.querySelectorAll(
-          '[class*="slider" i], [class*="drag" i], [role="slider"], button, [role="button"]'
-        )).filter(el => {
-          if (!isVisible(el)) return false;
-          const r = el.getBoundingClientRect();
-          return r.width >= 20 && r.height >= 20 && r.left >= rect.left - 20 && r.right <= rect.right + 20 && r.top >= rect.top - 20 && r.bottom <= rect.bottom + 60;
-        }).sort((a, b) => {
-          const ar = a.getBoundingClientRect();
-          const br = b.getBoundingClientRect();
-          return ar.left - br.left;
-        })[0];
-        const sliderRect = slider?.getBoundingClientRect();
-        const track = Array.from(document.querySelectorAll(
-          '[class*="track" i], [class*="slider" i], [class*="drag" i], [role="slider"]'
-        )).filter(el => {
-          if (!isVisible(el)) return false;
-          const r = el.getBoundingClientRect();
-          return r.width >= 80 && r.height >= 8 && r.left >= rect.left - 30 && r.right <= rect.right + 30 && r.top >= rect.top - 20 && r.bottom <= rect.bottom + 80;
-        }).sort((a, b) => {
-          const ar = a.getBoundingClientRect();
-          const br = b.getBoundingClientRect();
-          return (br.width * br.height) - (ar.width * ar.height);
-        })[0];
-        const trackRect = track?.getBoundingClientRect();
+          const imgSelectors = [
+            '#captcha-verify-image',
+            '.captcha-verify-image',
+            '.captcha_verify_img--wrapper',
+            'img[src*="byteoversea"]',
+            'img[src*="tiktokcdn"]',
+            'img[src*="captcha"]',
+            'img[src*="verify"]',
+            'canvas',
+            'div[class*="img" i]',
+            'div[class*="image" i]'
+          ];
+          const challengeImg = imgSelectors.flatMap(s => Array.from(captchaBox.querySelectorAll(s)))
+            .concat(imgSelectors.flatMap(s => Array.from(document.querySelectorAll(s))))
+            .find(el => {
+              if (!isVisible(el)) return false;
+              const r = el.getBoundingClientRect();
+              return r.width >= 120 && r.height >= 80 && r.top >= boxRect.top - 50 && r.bottom <= boxRect.bottom + 50;
+            });
 
-        return {
-          found: true,
-          taskType: detectTaskType(captcha),
-          rect: {
-            x: Math.max(0, Math.round(rect.left)),
-            y: Math.max(0, Math.round(rect.top)),
-            width: Math.round(rect.width),
-            height: Math.round(rect.height)
-          },
-          widthView: Math.round(rect.width),
-          heightView: Math.round(rect.height),
-          slider: sliderRect ? {
-            x: Math.round(sliderRect.left + sliderRect.width / 2),
-            y: Math.round(sliderRect.top + sliderRect.height / 2)
-          } : null,
-          track: trackRect ? {
-            x: Math.round(trackRect.left),
-            y: Math.round(trackRect.top),
-            width: Math.round(trackRect.width),
-            height: Math.round(trackRect.height)
-          } : null
-        };
-      } catch(e) {
-        return { found: false, error: String(e) };
+          const targetEl = challengeImg || captchaBox;
+          const targetRect = targetEl.getBoundingClientRect();
+
+          // Slider button and track
+          const sliderRect = sliderEl ? sliderEl.getBoundingClientRect() : null;
+
+        // 2. Locate the EXACT track element directly hosting the slider button
+        let trackEl = null;
+        if (sliderEl) {
+          // Check if parent or closest container is the track bar (height 20-55px, width > 150px)
+          let parent = sliderEl.parentElement;
+          while (parent && parent !== captchaBox && parent !== document.body) {
+            const pr = parent.getBoundingClientRect();
+            if (pr.width >= 160 && pr.height >= 20 && pr.height <= 65 && Math.abs(pr.top - (sliderRect?.top || 0)) <= 15) {
+              trackEl = parent;
+              break;
+            }
+            parent = parent.parentElement;
+          }
+        }
+
+        if (!trackEl) {
+          const specificTrackSelectors = [
+            '.captcha_verify_slide--slidebar',
+            '.sec-captcha-slider-track',
+            '[class*="slidebar" i]',
+            '[class*="slider-track" i]',
+            '[class*="slider-bg" i]',
+            '[class*="drag-bar" i]',
+            '[class*="slide_bar" i]',
+            '[class*="drag-track" i]',
+            '[class*="rail" i]'
+          ];
+          trackEl = specificTrackSelectors
+            .flatMap(sel => Array.from(captchaBox.querySelectorAll(sel)))
+            .find(el => {
+              if (!isVisible(el)) return false;
+              const r = el.getBoundingClientRect();
+              return r.width >= 160 && r.height >= 10 && r.height <= 65;
+            });
+        }
+
+        const trackRect = trackEl ? trackEl.getBoundingClientRect() : (sliderRect ? {
+          left: boxRect.left + 15,
+          top: sliderRect.top,
+          width: boxRect.width - 30,
+          height: sliderRect.height
+        } : null);
+
+        const titleEl = document.querySelector('[class*="title" i], [class*="tip" i], [class*="header" i], [class*="instruction" i], [class*="prompt" i], [class*="msg" i]');
+        const questionText = titleEl ? (titleEl.innerText || titleEl.textContent || '').trim() : 'Select 2 objects with the same shape';
+
+          const getBase64FromImg = async (imgEl) => {
+            if (!imgEl) return null;
+            if (imgEl.src && imgEl.src.startsWith('data:image')) {
+              return imgEl.src.split(',')[1];
+            }
+            try {
+              const canvas = document.createElement('canvas');
+              canvas.width = imgEl.naturalWidth || imgEl.width || 340;
+              canvas.height = imgEl.naturalHeight || imgEl.height || 340;
+              const ctx = canvas.getContext('2d');
+              ctx.drawImage(imgEl, 0, 0);
+              const dataUrl = canvas.toDataURL('image/png');
+              if (dataUrl && dataUrl.length > 100) return dataUrl.split(',')[1];
+            } catch (e) {}
+
+            try {
+              const resp = await fetch(imgEl.src);
+              const blob = await resp.blob();
+              return new Promise((resolve) => {
+                const reader = new FileReader();
+                reader.onloadend = () => resolve((reader.result || '').split(',')[1]);
+                reader.readAsDataURL(blob);
+              });
+            } catch (e) {
+              return null;
+            }
+          };
+
+          const allImgs = Array.from(captchaBox.querySelectorAll('img')).filter(isVisible);
+          let innerBase64 = null;
+          let outerBase64 = null;
+          let mainImgBase64 = null;
+
+          if (taskType === 'TiktokRotateWebTask') {
+            const innerImg = allImgs.find(i => {
+              const c = (i.className + ' ' + (i.id || '')).toLowerCase();
+              return c.includes('inner') || c.includes('inside') || c.includes('rotat') || c.includes('circle');
+            }) || allImgs[0];
+
+            const outerImg = allImgs.find(i => {
+              const c = (i.className + ' ' + (i.id || '')).toLowerCase();
+              return (c.includes('outer') || c.includes('outside') || c.includes('back') || c.includes('bg')) && i !== innerImg;
+            }) || (allImgs.length > 1 ? allImgs[1] : null);
+
+            if (innerImg) innerBase64 = await getBase64FromImg(innerImg);
+            if (outerImg) outerBase64 = await getBase64FromImg(outerImg);
+          } else {
+            const mainImg = challengeImg?.tagName === 'IMG' ? challengeImg : allImgs[0];
+            if (mainImg) mainImgBase64 = await getBase64FromImg(mainImg);
+          }
+
+          return {
+            found: true,
+            taskType,
+            question: questionText,
+            innerBase64,
+            outerBase64,
+            mainImgBase64,
+            rect: {
+              x: Math.max(0, Math.round(targetRect.left)),
+              y: Math.max(0, Math.round(targetRect.top)),
+              width: Math.round(targetRect.width),
+              height: Math.round(targetRect.height)
+            },
+            widthView: Math.round(targetRect.width),
+            heightView: Math.round(targetRect.height),
+            slider: sliderRect ? {
+              x: Math.round(sliderRect.left + sliderRect.width / 2),
+              y: Math.round(sliderRect.top + sliderRect.height / 2),
+              width: Math.round(sliderRect.width),
+              height: Math.round(sliderRect.height)
+            } : null,
+            track: trackRect ? {
+              x: Math.round(trackRect.left),
+              y: Math.round(trackRect.top),
+              width: Math.round(trackRect.width),
+              height: Math.round(trackRect.height)
+            } : null
+          };
+        } catch(e) {
+          return { found: false, error: String(e) };
+        }
+      })();
+    `).catch(() => ({ found: false }));
+
+    if (!captchaData?.found || !captchaData.rect) {
+      if (attempt === 1) {
+        onLog({
+          accountId: acc.id,
+          accountUsername: acc.username,
+          level: 'warning',
+          message: '[Captcha] ⚠️ Không tìm thấy vị trí khung ảnh CAPTCHA để chụp gửi OmoCaptcha.',
+        });
       }
-    })();
-  `).catch(() => ({ found: false }));
+      return false;
+    }
 
-  if (!captchaInfo?.found || !captchaInfo.rect) {
+    let fallbackBase64 = '';
+    if (!captchaData.innerBase64 && !captchaData.mainImgBase64) {
+      const captureRect = {
+        x: Math.max(0, Math.round(captchaData.rect.x)),
+        y: Math.max(0, Math.round(captchaData.rect.y)),
+        width: Math.max(20, Math.round(captchaData.rect.width)),
+        height: Math.max(20, Math.round(captchaData.rect.height)),
+      };
+      const image = await win.webContents.capturePage(captureRect);
+      fallbackBase64 = image.toDataURL().split(',')[1] || '';
+    }
+
+    const taskType = ([
+      'TiktokSliderWebTask',
+      'TiktokRotateWebTask',
+      'TiktokSelectObjectWebTask',
+      'Tiktok3DSelectObjectWebTask',
+    ].includes(captchaData.taskType) ? captchaData.taskType : 'TiktokSliderWebTask') as OmoTikTokWebTaskType;
+
+    const taskLabelMap: Record<string, string> = {
+      TiktokRotateWebTask: 'Xoay khớp hình tròn (Rotate Puzzle)',
+      TiktokSliderWebTask: 'Kéo thanh trượt (Slider Puzzle)',
+      Tiktok3DSelectObjectWebTask: 'Khớp 2 đối tượng 3D (3D Object Match)',
+      TiktokSelectObjectWebTask: 'Chọn đối tượng theo thứ tự (Select in Order)'
+    };
+    const taskLabel = taskLabelMap[taskType] || taskType;
+
+    let taskPayload: any = { type: taskType };
+
+    if (taskType === 'TiktokRotateWebTask') {
+      if (captchaData.innerBase64 && captchaData.outerBase64) {
+        taskPayload.imageBase64s = [captchaData.innerBase64, captchaData.outerBase64];
+      } else if (captchaData.innerBase64) {
+        taskPayload.imageBase64s = [captchaData.innerBase64, captchaData.innerBase64];
+      } else {
+        taskPayload.imageBase64s = [fallbackBase64, fallbackBase64];
+      }
+    } else if (taskType === 'Tiktok3DSelectObjectWebTask') {
+      taskPayload.imageBase64 = captchaData.mainImgBase64 || fallbackBase64;
+      taskPayload.widthView = captchaData.widthView;
+      taskPayload.heightView = captchaData.heightView || captchaData.rect.height;
+      taskPayload.question = captchaData.question || 'Select 2 objects with the same shape';
+    } else if (taskType === 'TiktokSliderWebTask') {
+      taskPayload.imageBase64 = captchaData.mainImgBase64 || fallbackBase64;
+      taskPayload.widthView = captchaData.widthView;
+    } else {
+      taskPayload.imageBase64 = captchaData.mainImgBase64 || fallbackBase64;
+      taskPayload.widthView = captchaData.widthView;
+      taskPayload.heightView = captchaData.heightView || captchaData.rect.height;
+    }
+
     onLog({
       accountId: acc.id,
       accountUsername: acc.username,
-      level: 'warning',
-      message: '[Captcha] Could not locate TikTok captcha panel for OmoCaptcha.',
+      level: 'info',
+      message: `[Captcha] 📸 Đã gửi bài toán ${taskLabel} (${taskType}) lên OmoCaptcha AI...`,
     });
-    return false;
+    onLog({
+      accountId: acc.id,
+      accountUsername: acc.username,
+      level: 'info',
+      message: `[Captcha] Tọa độ CDP dùng CSS viewport px, không nhân zoom. zoom=${win.webContents.getZoomFactor() || 1}, rect=${JSON.stringify(captchaData.rect)}, slider=${JSON.stringify(captchaData.slider || null)}.`,
+    });
+
+    const createRes = await postOmoCaptcha({
+      clientKey,
+      task: taskPayload,
+    });
+
+    if (createRes.errorId !== 0 || !createRes.taskId) {
+      onLog({
+        accountId: acc.id,
+        accountUsername: acc.username,
+        level: 'error',
+        message: `[Captcha] ❌ Tạo bài toán OmoCaptcha thất bại: ${createRes.errorCode || ''} - ${createRes.errorDescription || ''}`,
+      });
+      continue;
+    }
+
+    onLog({
+      accountId: acc.id,
+      accountUsername: acc.username,
+      level: 'info',
+      message: `[Captcha] ⏳ Đã nhận Task ID: ${createRes.taskId}, đang đợi AI giải...`,
+    });
+
+    let solution: any = null;
+    for (let i = 0; i < 15; i++) {
+      if (win.isDestroyed() || isSeedingCancelRequested()) return false;
+      await waitForSeedingDelay(i === 0 ? 1200 : 2000, win).catch(() => {});
+      if (win.isDestroyed() || isSeedingCancelRequested()) return false;
+
+      const resultRes = await postOmoCaptcha({ clientKey, taskId: createRes.taskId });
+      if (resultRes.errorId !== 0) {
+        onLog({
+          accountId: acc.id,
+          accountUsername: acc.username,
+          level: 'error',
+          message: `[Captcha] ❌ Lỗi nhận kết quả từ OmoCaptcha: ${resultRes.errorCode || ''} ${resultRes.errorDescription || ''}`,
+        });
+        break;
+      }
+      if (resultRes.status === 'ready') {
+        solution = resultRes.solution;
+        onLog({
+          accountId: acc.id,
+          accountUsername: acc.username,
+          level: 'info',
+          message: `[Captcha] 📥 OmoCaptcha đã giải xong: ${JSON.stringify(solution)}. Đang thực hiện thao tác chuột CDP...`,
+        });
+        break;
+      }
+      if (resultRes.status === 'fail') {
+        onLog({
+          accountId: acc.id,
+          accountUsername: acc.username,
+          level: 'warning',
+          message: '[Captcha] ⚠️ OmoCaptcha báo không giải được bài toán này. Đang chuẩn bị thử lại...',
+        });
+        break;
+      }
+    }
+
+    if (!solution) {
+      continue;
+    }
+
+    const sliderWidth = captchaData.slider?.width || 40;
+    const trackWidth = captchaData.track?.width || (captchaData.rect.width - 30);
+    const startX = Math.round(captchaData.slider?.x || (captchaData.rect.x + sliderWidth / 2 + 10));
+    const startY = Math.round(captchaData.slider?.y || (captchaData.rect.y + captchaData.rect.height - 35));
+    // Exact travel length of the slider button inside the track
+    const maxTravel = Math.max(40, trackWidth - sliderWidth);
+
+    const dragByRatio = async (ratio: number) => {
+      const clampedRatio = Math.max(0, Math.min(1, ratio));
+      const travel = Math.round(maxTravel * clampedRatio);
+      const endX = startX + travel;
+      onLog({
+        accountId: acc.id,
+        accountUsername: acc.username,
+        level: 'info',
+        message: `[Captcha] 🖱️ Đang kéo slider: Tỷ lệ ${(clampedRatio * 100).toFixed(1)}% (Từ ${startX}px đến ${endX}px, cự ly ${travel}px/${maxTravel}px)...`,
+      });
+      await performCdpDrag(win, startX, startY, endX, startY);
+    };
+
+    let applied = false;
+    if (solution?.pointA && solution?.pointB) {
+      await performCdpClick(win, captchaData.rect.x + Number(solution.pointA.x || 0), captchaData.rect.y + Number(solution.pointA.y || 0));
+      await performCdpClick(win, captchaData.rect.x + Number(solution.pointB.x || 0), captchaData.rect.y + Number(solution.pointB.y || 0));
+      applied = true;
+    } else if (solution?.point1 && solution?.point2) {
+      await performCdpClick(win, captchaData.rect.x + Number(solution.point1.x || 0), captchaData.rect.y + Number(solution.point1.y || 0));
+      await performCdpClick(win, captchaData.rect.x + Number(solution.point2.x || 0), captchaData.rect.y + Number(solution.point2.y || 0));
+      applied = true;
+    } else if (Array.isArray(solution?.points) && solution.points.length > 0) {
+      for (const pt of solution.points.slice(0, 6)) {
+        await performCdpClick(win, captchaData.rect.x + Number(pt.x || 0), captchaData.rect.y + Number(pt.y || 0));
+      }
+      applied = true;
+    } else if (Array.isArray(solution) && solution.length > 0 && typeof solution[0]?.x === 'number') {
+      for (const pt of solution.slice(0, 6)) {
+        await performCdpClick(win, captchaData.rect.x + Number(pt.x || 0), captchaData.rect.y + Number(pt.y || 0));
+      }
+      applied = true;
+    } else if (solution?.point && typeof solution.point.x === 'number') {
+      await performCdpClick(win, captchaData.rect.x + Number(solution.point.x || 0), captchaData.rect.y + Number(solution.point.y || 0));
+      applied = true;
+    } else if (Array.isArray(solution?.objects) && solution.objects.length > 0) {
+      for (const objectIndex of solution.objects.slice(0, 6)) {
+        const index = Math.max(0, Number(objectIndex) || 0);
+        const col = index % 3;
+        const row = Math.floor(index / 3);
+        const clickX = captchaData.rect.x + (captchaData.rect.width * (col + 0.5) / 3);
+        const clickY = captchaData.rect.y + (captchaData.rect.height * (row + 0.5) / 2);
+        await performCdpClick(win, clickX, clickY);
+      }
+      applied = true;
+    } else if (solution?.end && typeof solution.end.x === 'number') {
+      // In Slider jigsaw puzzle, end.x is the target X position inside widthView
+      const widthView = captchaData.widthView || captchaData.rect.width || 340;
+      const sliderRatio = Math.max(0, Math.min(1, Number(solution.end.x) / widthView));
+      await dragByRatio(sliderRatio);
+      applied = true;
+    } else if (typeof solution?.distance === 'number') {
+      const widthView = captchaData.widthView || captchaData.rect.width || 340;
+      const sliderRatio = Math.max(0, Math.min(1, solution.distance / widthView));
+      await dragByRatio(sliderRatio);
+      applied = true;
+    } else if (typeof solution?.rotate === 'number' || typeof solution?.angle === 'number' || typeof solution?.degrees === 'number') {
+      const val = Number(solution.rotate ?? solution.angle ?? solution.degrees);
+      const rawRatio = Math.abs(val) <= 1 ? Math.abs(val) : (Math.abs(val) / 360);
+      // In TikTok Rotate Captcha: TikTok slider drags right (clockwise), which is opposite to OmoCaptcha's counter-clockwise angle
+      // Therefore, the required slider position to align is (1 - rawRatio)
+      const ratio = (rawRatio > 0 && rawRatio < 1) ? (1 - rawRatio) : rawRatio;
+      await dragByRatio(ratio);
+      applied = true;
+    } else if (typeof solution?.value === 'number' || typeof solution?.ratio === 'number' || typeof solution?.percent === 'number') {
+      const val = Number(solution.value ?? solution.ratio ?? solution.percent);
+      const rawRatio = Math.abs(val) <= 1 ? Math.abs(val) : (Math.abs(val) / 100);
+      const ratio = (taskType === 'TiktokRotateWebTask' && rawRatio > 0 && rawRatio < 1) ? (1 - rawRatio) : rawRatio;
+      await dragByRatio(ratio);
+      applied = true;
+    } else if (typeof solution === 'number') {
+      const rawRatio = solution <= 1 ? solution : (solution / 360);
+      const ratio = (taskType === 'TiktokRotateWebTask' && rawRatio > 0 && rawRatio < 1) ? (1 - rawRatio) : rawRatio;
+      await dragByRatio(ratio);
+      applied = true;
+    }
+
+    if (!applied) {
+      onLog({
+        accountId: acc.id,
+        accountUsername: acc.username,
+        level: 'warning',
+        message: `[Captcha] ⚠️ Định dạng lời giải ${taskType} từ OmoCaptcha chưa được hỗ trợ: ${JSON.stringify(solution || {})}`,
+      });
+      continue;
+    }
+
+    await win.webContents.executeJavaScript(`
+      (() => {
+        try {
+          const texts = ['verify', 'confirm', 'submit', 'done', 'ok', 'continue', 'xac minh', 'xong', 'tiep tuc'];
+          const isVisible = (el) => {
+            const r = el.getBoundingClientRect();
+            const s = window.getComputedStyle(el);
+            return r.width > 0 && r.height > 0 && s.visibility !== 'hidden' && s.display !== 'none';
+          };
+          const button = Array.from(document.querySelectorAll('button, [role="button"]')).find(el => {
+            if (!isVisible(el)) return false;
+            const text = (el.innerText || el.textContent || el.getAttribute('aria-label') || '').toLowerCase();
+            return texts.some(t => text.includes(t));
+          });
+          button?.click();
+        } catch(e) {}
+      })();
+    `).catch(() => undefined);
+
+    await waitForSeedingDelay(2500, win).catch(() => {});
+
+    // Verify if Captcha modal is still visible
+    const isStillPresent = await win.webContents.executeJavaScript(`
+      (() => {
+        try {
+          const isVisible = (el) => {
+            if (!el) return false;
+            const rect = el.getBoundingClientRect();
+            const style = window.getComputedStyle(el);
+            return rect.width > 20 && rect.height > 20 && style.visibility !== 'hidden' && style.display !== 'none' && style.opacity !== '0';
+          };
+          const selectors = [
+            '#captcha-verify-container',
+            '.captcha-verify-container',
+            '#captcha_verify_container',
+            '.captcha_verify_container',
+            '.sec-captcha-container',
+            '.captcha-container',
+            '.verify-wrap',
+            '[class*="captcha-card" i]',
+            '[class*="captcha-modal" i]',
+            '[class*="captcha_card" i]',
+            '[class*="captcha_modal" i]',
+            'iframe[src*="captcha"]',
+            'iframe[src*="sec"]',
+            'iframe[src*="verify"]',
+            'iframe[src*="challenge"]'
+          ];
+          return selectors.some(s => Array.from(document.querySelectorAll(s)).some(isVisible));
+        } catch(e) {
+          return false;
+        }
+      })();
+    `).catch(() => false);
+
+    if (!isStillPresent) {
+      onLog({
+        accountId: acc.id,
+        accountUsername: acc.username,
+        level: 'success',
+        message: `[Captcha] 🎉 Đã tự động giải và vượt qua thành công CAPTCHA ${taskLabel} cho @${acc.username}! Đang đợi 4s để TikTok xác nhận phiên...`,
+      });
+      await waitForSeedingDelay(4000, win).catch(() => {});
+      return true;
+    } else {
+      onLog({
+        accountId: acc.id,
+        accountUsername: acc.username,
+        level: 'warning',
+        message: `[Captcha] ⚠️ Thao tác lần ${attempt} chưa vượt qua được CAPTCHA, đang kiểm tra để thử lại...`,
+      });
+    }
   }
 
-  const image = await win.webContents.capturePage(captchaInfo.rect);
-  const imageBase64 = image.toDataURL().split(',')[1] || '';
-  const taskType = ([
-    'TiktokSliderWebTask',
-    'TiktokRotateWebTask',
-    'TiktokSelectObjectWebTask',
-    'Tiktok3DSelectObjectWebTask',
-  ].includes(captchaInfo.taskType) ? captchaInfo.taskType : 'TiktokSliderWebTask') as OmoTikTokWebTaskType;
-  const taskPayload: {
-    type: OmoTikTokWebTaskType;
-    imageBase64: string;
-    widthView: number;
-    heightView?: number;
-  } = {
-    type: taskType,
-    imageBase64,
-    widthView: captchaInfo.widthView,
-  };
-
-  if (taskType !== 'TiktokSliderWebTask') {
-    taskPayload.heightView = captchaInfo.heightView || captchaInfo.rect.height;
-  }
-
-  onLog({
-    accountId: acc.id,
-    accountUsername: acc.username,
-    level: 'info',
-    message: `[Captcha] Sending ${taskType} to OmoCaptcha. widthView=${taskPayload.widthView}, heightView=${taskPayload.heightView || 'n/a'}`,
-  });
-
-  const createRes = await postOmoCaptcha({
-    clientKey,
-    task: taskPayload,
-  });
-
-  if (createRes.errorId !== 0 || !createRes.taskId) {
     onLog({
       accountId: acc.id,
       accountUsername: acc.username,
       level: 'error',
-      message: `[Captcha] OmoCaptcha createTask failed: ${createRes.errorCode || ''} ${createRes.errorDescription || ''}`,
+      message: `[Captcha] ❌ Không thể vượt qua CAPTCHA cho @${acc.username} sau ${maxAttempts} lần thử.`,
     });
     return false;
+  } finally {
+    if (originalZoomFactor !== 1 && !win.isDestroyed()) {
+      win.webContents.setZoomFactor(originalZoomFactor);
+    }
   }
+}
 
-  let solution: any = null;
-  for (let i = 0; i < 12; i++) {
-    await new Promise(res => setTimeout(res, i === 0 ? 1200 : 2000));
-    const resultRes = await postOmoCaptcha({ clientKey, taskId: createRes.taskId });
-    if (resultRes.errorId !== 0) {
+async function checkAndSolveAnyCaptcha(
+  win: BrowserWindow,
+  acc: { id: string; username: string },
+  onLog: (log: Omit<TaskLogItem, 'id' | 'timestamp'>) => void
+): Promise<boolean> {
+  if (win.isDestroyed() || isSeedingCancelRequested()) return false;
+
+  try {
+    const hasCaptcha = await win.webContents.executeJavaScript(`
+      (() => {
+        try {
+          const isVisible = (el) => {
+            if (!el) return false;
+            const rect = el.getBoundingClientRect();
+            const style = window.getComputedStyle(el);
+            return rect.width > 20 && rect.height > 20 && style.visibility !== 'hidden' && style.display !== 'none' && style.opacity !== '0';
+          };
+
+          const specificSelectors = [
+            '#captcha-verify-container',
+            '.captcha-verify-container',
+            '#captcha_verify_container',
+            '.captcha_verify_container',
+            '.sec-captcha-container',
+            '.captcha-container',
+            '.verify-wrap',
+            '[class*="captcha-card" i]',
+            '[class*="captcha-modal" i]',
+            '[class*="captcha_card" i]',
+            '[class*="captcha_modal" i]',
+            'iframe[src*="captcha"]',
+            'iframe[src*="sec"]',
+            'iframe[src*="verify"]',
+            'iframe[src*="challenge"]',
+            '[id*="captcha" i]',
+            '[class*="captcha" i]'
+          ];
+
+          const hasModalElement = specificSelectors.some(sel => {
+            const els = Array.from(document.querySelectorAll(sel));
+            return els.some(isVisible);
+          });
+
+          if (hasModalElement) return true;
+
+          const bodyText = document.body?.innerText || '';
+          const normalize = (s) => String(s || '').toLowerCase()
+            .normalize('NFD')
+            .replace(/[\\u0300-\\u036f]/g, '')
+            .replace(/đ/g, 'd')
+            .replace(/Đ/g, 'D')
+            .trim();
+          const normBody = normalize(bodyText);
+
+          return normBody.includes('drag the slider') ||
+                 normBody.includes('keo thanh truot') ||
+                 normBody.includes('fit the puzzle') ||
+                 normBody.includes('fit the shape') ||
+                 normBody.includes('select 2 objects') ||
+                 normBody.includes('chon 2 doi tuong') ||
+                 normBody.includes('hai doi tuong') ||
+                 normBody.includes('same shape') ||
+                 normBody.includes('rotate the image') ||
+                 normBody.includes('rotate') ||
+                 normBody.includes('xoay hinh') ||
+                 normBody.includes('xoay anh') ||
+                 normBody.includes('complete the puzzle') ||
+                 normBody.includes('ghep hinh') ||
+                 normBody.includes('verify to continue') ||
+                 normBody.includes('xac minh de tiep tuc') ||
+                 normBody.includes('xac minh bao mat') ||
+                 normBody.includes('security verification');
+        } catch(e) {
+          return false;
+        }
+      })();
+    `).catch(() => false);
+
+    if (hasCaptcha) {
       onLog({
         accountId: acc.id,
         accountUsername: acc.username,
-        level: 'error',
-        message: `[Captcha] OmoCaptcha getTaskResult failed: ${resultRes.errorCode || ''} ${resultRes.errorDescription || ''}`,
+        level: 'info',
+        message: `[Captcha] 🔍 Phát hiện CAPTCHA TikTok cho @${acc.username}, đang tiến hành giải tự động...`,
       });
-      return false;
+      return await solveTikTokWebCaptchaWithOmo(win, acc, onLog);
     }
-    if (resultRes.status === 'ready') {
-      solution = resultRes.solution;
-      break;
-    }
-    if (resultRes.status === 'fail') {
-      onLog({
-        accountId: acc.id,
-        accountUsername: acc.username,
-        level: 'error',
-        message: '[Captcha] OmoCaptcha task failed.',
-      });
-      return false;
-    }
-  }
-
-  const zoomFactor = win.webContents.getZoomFactor();
-  const toAbsolutePoint = (point: any) => ({
-    x: Math.round((captchaInfo.rect.x + Number(point.x || 0)) * zoomFactor),
-    y: Math.round((captchaInfo.rect.y + Number(point.y || 0)) * zoomFactor),
-  });
-  const clickPoint = async (point: any) => {
-    const { x, y } = toAbsolutePoint(point);
-    win.webContents.sendInputEvent({ type: 'mouseMove', x, y });
-    await new Promise(res => setTimeout(res, 80 + Math.random() * 80));
-    win.webContents.sendInputEvent({ type: 'mouseDown', x, y, button: 'left', clickCount: 1 });
-    await new Promise(res => setTimeout(res, 70 + Math.random() * 80));
-    win.webContents.sendInputEvent({ type: 'mouseUp', x, y, button: 'left', clickCount: 1 });
-    await new Promise(res => setTimeout(res, 350 + Math.random() * 250));
-  };
-  const dragToPoint = async (end: any) => {
-    const startX = Math.round((captchaInfo.slider?.x || (captchaInfo.rect.x + 38)) * zoomFactor);
-    const startY = Math.round((captchaInfo.slider?.y || (captchaInfo.rect.y + captchaInfo.rect.height - 34)) * zoomFactor);
-    const endPoint = toAbsolutePoint({
-      x: Number(end.x || 0),
-      y: typeof end.y === 'number' ? end.y : captchaInfo.rect.height - 34,
-    });
-    const steps = 28;
-
-    win.webContents.sendInputEvent({ type: 'mouseMove', x: startX, y: startY });
-    win.webContents.sendInputEvent({ type: 'mouseDown', x: startX, y: startY, button: 'left', clickCount: 1 });
-    for (let i = 1; i <= steps; i++) {
-      const t = i / steps;
-      const ease = 1 - Math.pow(1 - t, 2);
-      const x = Math.round(startX + (endPoint.x - startX) * ease + (Math.random() * 2 - 1));
-      const y = Math.round(startY + (endPoint.y - startY) * t + (Math.random() * 2 - 1));
-      win.webContents.sendInputEvent({ type: 'mouseMove', x, y });
-      await new Promise(res => setTimeout(res, 18 + Math.random() * 20));
-    }
-    win.webContents.sendInputEvent({ type: 'mouseUp', x: endPoint.x, y: endPoint.y, button: 'left', clickCount: 1 });
-  };
-  const dragByAngle = async (angle: number) => {
-    const startX = Math.round((captchaInfo.slider?.x || (captchaInfo.rect.x + 38)) * zoomFactor);
-    const startY = Math.round((captchaInfo.slider?.y || (captchaInfo.rect.y + captchaInfo.rect.height - 34)) * zoomFactor);
-    const trackWidth = captchaInfo.track?.width || Math.max(120, captchaInfo.rect.width - 80);
-    const clampedAngle = Math.max(-180, Math.min(180, Number(angle) || 0));
-    const offset = Math.round((clampedAngle / 180) * (trackWidth * 0.45) * zoomFactor);
-    const endX = startX + offset;
-    await dragToPoint({
-      x: (endX / zoomFactor) - captchaInfo.rect.x,
-      y: (startY / zoomFactor) - captchaInfo.rect.y,
-    });
-  };
-
-  let applied = false;
-  if (solution?.pointA && solution?.pointB) {
-    await clickPoint(solution.pointA);
-    await clickPoint(solution.pointB);
-    applied = true;
-  } else if (Array.isArray(solution?.points) && solution.points.length) {
-    for (const point of solution.points.slice(0, 6)) {
-      await clickPoint(point);
-    }
-    applied = true;
-  } else if (solution?.point && typeof solution.point.x === 'number') {
-    await clickPoint(solution.point);
-    applied = true;
-  } else if (Array.isArray(solution?.objects) && solution.objects.length) {
-    for (const objectIndex of solution.objects.slice(0, 6)) {
-      const index = Math.max(0, Number(objectIndex) || 0);
-      const col = index % 3;
-      const row = Math.floor(index / 3);
-      await clickPoint({
-        x: captchaInfo.rect.width * (col + 0.5) / 3,
-        y: captchaInfo.rect.height * (row + 0.5) / 2,
-      });
-    }
-    applied = true;
-  } else if (solution?.end && typeof solution.end.x === 'number') {
-    await dragToPoint(solution.end);
-    applied = true;
-  } else {
-    const angle = solution?.angle ?? solution?.degree ?? solution?.degrees ?? solution?.rotate;
-    if (typeof angle === 'number' || typeof angle === 'string') {
-      await dragByAngle(Number(angle));
-      applied = true;
-    }
-  }
-
-  if (!applied) {
-    onLog({
-      accountId: acc.id,
-      accountUsername: acc.username,
-      level: 'warning',
-      message: `[Captcha] OmoCaptcha returned unsupported ${taskType} solution shape: ${JSON.stringify(solution || {})}`,
-    });
+    return false;
+  } catch (err) {
     return false;
   }
-
-  await win.webContents.executeJavaScript(`
-    (() => {
-      try {
-        const texts = ['verify', 'confirm', 'submit', 'done', 'ok', 'continue', 'xac minh', 'xong', 'tiep tuc'];
-        const isVisible = (el) => {
-          const r = el.getBoundingClientRect();
-          const s = window.getComputedStyle(el);
-          return r.width > 0 && r.height > 0 && s.visibility !== 'hidden' && s.display !== 'none';
-        };
-        const button = Array.from(document.querySelectorAll('button, [role="button"]')).find(el => {
-          if (!isVisible(el)) return false;
-          const text = (el.innerText || el.textContent || el.getAttribute('aria-label') || '').toLowerCase();
-          return texts.some(t => text.includes(t));
-        });
-        button?.click();
-      } catch(e) {}
-    })();
-  `).catch(() => undefined);
-  await new Promise(res => setTimeout(res, 2500));
-
-  onLog({
-    accountId: acc.id,
-    accountUsername: acc.username,
-    level: 'success',
-    message: `[Captcha] OmoCaptcha ${taskType} solution submitted for @${acc.username}.`,
-  });
-  return true;
 }
 
 async function activateLiveUiForTapping(win: BrowserWindow): Promise<void> {
@@ -2702,26 +3263,7 @@ async function executeTaskForAccount(
     `);
     await waitForSeedingDelay(800, win);
 
-    const hasInitialCaptcha = await win.webContents.executeJavaScript(`
-      (() => {
-        const bodyText = document.body?.innerText || '';
-        return !!document.querySelector('iframe[src*="captcha"], iframe[src*="sec"], #captcha-verify-container, .sec-captcha-container') ||
-               bodyText.includes('Drag the slider') ||
-               bodyText.includes('Complete the puzzle') ||
-               bodyText.includes('Verify to continue');
-      })();
-    `).catch(() => false);
-    if (hasInitialCaptcha) {
-      await solveTikTokWebCaptchaWithOmo(win, acc, onLog).catch(err => {
-        onLog({
-          accountId: acc.id,
-          accountUsername: acc.username,
-          level: 'error',
-          message: `[Captcha] Initial OmoCaptcha solve error: ${err?.message || err}`,
-        });
-        return false;
-      });
-    }
+    await checkAndSolveAnyCaptcha(win, acc, onLog);
     throwIfSeedingCancelled(win);
 
     onLog({
@@ -2743,18 +3285,12 @@ async function executeTaskForAccount(
     });
 
     if (config.targetType === 'video') {
-      await runSeedingInteraction(async () => {
-        if (!win.isDestroyed()) {
-          await waitForSeedingDelay(150, win);
-        }
-        throwIfSeedingCancelled(win);
-
       if (config.likeEnabled) {
         onLog({
           accountId: acc.id,
           accountUsername: acc.username,
           level: 'info',
-          message: `Äang thá»±c hiá»‡n tháº£ tim (Like) video...`,
+          message: 'Đang thực hiện thả tim (Like) video...',
         });
 
         let likeResult: any = { attempted: false, alreadyLiked: false, target: null };
@@ -2810,34 +3346,13 @@ async function executeTaskForAccount(
                 '[data-e2e*="like"]',
                 'button[data-e2e*="like" i]',
                 'button[aria-label*="like" i]',
-                'button[aria-label*="thÃ­ch" i]',
-                'button[aria-label*="ThÃ­ch" i]',
+                'button[aria-label*="thích" i]',
+                'button[aria-label*="Thích" i]',
                 '[role="button"][aria-label*="like" i]',
-                '[role="button"][aria-label*="thÃ­ch" i]',
-                '[role="button"][aria-label*="ThÃ­ch" i]',
                 'span[aria-label*="like" i]',
-                'span[aria-label*="thÃ­ch" i]',
                 'div[class*="LikeContainer"]',
-                'button[class*="ButtonLike"]',
-                'div[class*="ButtonActionItem"]'
+                'button[class*="ButtonLike"]'
               ];
-
-              const likedXPaths = [
-                '//*[@data-e2e="browse-like-icon"]/ancestor::button[@aria-pressed="true"]',
-                '//main //*[@data-e2e="like-icon"]/ancestor::button[@aria-pressed="true"]',
-                '//*[@data-e2e="like-icon"]/ancestor::button[@aria-pressed="true"]',
-                '//video/ancestor::*[@data-e2e="recommend-list-item-container"]//*[@data-e2e="like-icon"]/ancestor::button[@aria-pressed="true"]'
-              ];
-              const getByXPath = (xpath) => document.evaluate(
-                xpath,
-                document,
-                null,
-                XPathResult.FIRST_ORDERED_NODE_TYPE,
-                null
-              ).singleNodeValue;
-              const likedByXPath = likedXPaths.map(getByXPath).find(isVisible);
-              if (likedByXPath) return { found: true, liked: true };
-
               const node = selectors
                 .flatMap(selector => Array.from(document.querySelectorAll(selector)))
                 .find(isVisible);
@@ -2853,8 +3368,8 @@ async function executeTaskForAccount(
                 liked: node.getAttribute?.('aria-pressed') === 'true' ||
                        label.includes('liked') ||
                        label.includes('unlike') ||
-                       label.includes('Ä‘Ã£ thÃ­ch') ||
-                       label.includes('bá» thÃ­ch') ||
+                       label.includes('đã thích') ||
+                       label.includes('bỏ thích') ||
                        hasLikedColor(node)
               };
             } catch(e) {
@@ -2873,217 +3388,121 @@ async function executeTaskForAccount(
                   const style = window.getComputedStyle(el);
                   return rect.width > 0 && rect.height > 0 && style.visibility !== 'hidden' && style.display !== 'none';
                 };
-
-                const getLabel = (el) => [
-                  el?.getAttribute?.('aria-label'),
-                  el?.getAttribute?.('title'),
-                  el?.getAttribute?.('class'),
-                  el?.getAttribute?.('data-e2e'),
-                  el?.textContent
-                ].join(' ').toLowerCase();
-
-                const isLikedColor = (color) => {
-                  if (!color) return false;
-                  const normalized = color.replace(/\s+/g, '').toLowerCase();
-                  return normalized === 'rgb(255,59,92)' ||
-                         normalized === 'rgba(255,59,92,1)' ||
-                         normalized === 'rgb(254,44,85)' ||
-                         normalized === 'rgba(254,44,85,1)' ||
-                         normalized === 'rgb(255,42,91)' ||
-                         normalized === 'rgba(255,42,91,1)' ||
-                         normalized === 'rgb(235,32,73)' ||
-                         normalized === 'rgba(235,32,73,1)' ||
-                         normalized.includes('#fe2c55') ||
-                         normalized.includes('#ff3b5c') ||
-                         normalized.includes('#ff2a5b') ||
-                         normalized === 'red';
-                };
-
-                const hasLikedColor = (el) => {
-                  if (!el) return false;
-                  const colorTargets = [
-                    el,
-                    el.querySelector?.('svg'),
-                    el.querySelector?.('path'),
-                    el.querySelector?.('[fill]'),
-                    el.querySelector?.('[stroke]')
-                  ].filter(Boolean);
-
-                  return colorTargets.some(target => {
-                    const style = window.getComputedStyle(target);
-                    return isLikedColor(style.color) ||
-                           isLikedColor(style.fill) ||
-                           isLikedColor(style.stroke) ||
-                           isLikedColor(target.getAttribute?.('fill')) ||
-                           isLikedColor(target.getAttribute?.('stroke'));
-                  });
-                };
-
-                const isLikedControl = (el) => {
-                  const label = getLabel(el);
-                  return el?.getAttribute?.('aria-pressed') === 'true' ||
-                         label.includes('liked') ||
-                         label.includes('unlike') ||
-                         label.includes('Ä‘Ã£ thÃ­ch') ||
-                         label.includes('bá» thÃ­ch') ||
-                         hasLikedColor(el);
-                };
-
-                const getClickableParent = (el) => {
-                  let cur = el;
-                  for (let i = 0; i < 6 && cur; i++) {
-                    const tag = cur.tagName?.toLowerCase();
-                    const role = cur.getAttribute?.('role');
-                    if (tag === 'button' || role === 'button') return cur;
-                    cur = cur.parentElement;
-                  }
-                  return el;
-                };
-
                 const selectors = [
-                  { type: 'xpath', value: '//*[@data-e2e="browse-like-icon"]/ancestor::button[@aria-pressed="false"]' },
-                  { type: 'xpath', value: '//main //*[@data-e2e="like-icon"]/ancestor::button[@aria-pressed="false"]' },
-                  { type: 'xpath', value: '//*[@data-e2e="like-icon"]/ancestor::button[@aria-pressed="false"]' },
-                  { type: 'xpath', value: '//video/ancestor::*[@data-e2e="recommend-list-item-container"]//*[@data-e2e="like-icon"]/ancestor::button[@aria-pressed="false"]' },
-                  { type: 'xpath', value: '//strong[contains(@data-e2e,"like-count")]//parent::button' },
                   '[data-e2e="like-icon"]',
                   '[data-e2e="browse-like-icon"]',
                   '[data-e2e="video-like-icon"]',
                   '[data-e2e="feed-like"]',
-                  '[data-e2e="search-like-icon"]',
-                  '[data-e2e*="like"]',
-                  'button[data-e2e*="like" i]',
                   'button[aria-label*="like" i]',
-                  'button[aria-label*="thÃ­ch" i]',
-                  'button[aria-label*="ThÃ­ch" i]',
+                  'button[aria-label*="thích" i]',
+                  'button[aria-label*="Thích" i]',
                   '[role="button"][aria-label*="like" i]',
-                  '[role="button"][aria-label*="thÃ­ch" i]',
-                  '[role="button"][aria-label*="ThÃ­ch" i]',
-                  'span[aria-label*="like" i]',
-                  'span[aria-label*="thÃ­ch" i]',
-                  'div[class*="LikeContainer"]',
-                  'button[class*="ButtonLike"]',
-                  'div[class*="ButtonActionItem"]'
+                  '[class*="LikeContainer"]',
+                  '[class*="ButtonLike"]'
                 ];
-
-                for (const selector of selectors) {
-                  const node = typeof selector === 'object'
-                    ? document.evaluate(
-                        selector.value,
-                        document,
-                        null,
-                        XPathResult.FIRST_ORDERED_NODE_TYPE,
-                        null
-                      ).singleNodeValue
-                    : Array.from(document.querySelectorAll(selector)).find(isVisible);
-                  if (!node) continue;
-                  const target = getClickableParent(node);
-                  const rect = target.getBoundingClientRect();
-                  if (!rect.width || !rect.height) continue;
-
-                  const alreadyLiked = isLikedControl(target) || isLikedControl(node);
-                  return {
-                    found: true,
-                    alreadyLiked,
-                    x: Math.round(rect.left + rect.width / 2),
-                    y: Math.round(rect.top + rect.height / 2),
-                    target: 'like-button',
-                    label: getLabel(target) || getLabel(node)
-                  };
-                }
-
-                const video = Array.from(document.querySelectorAll('video')).find(isVisible) ||
-                              Array.from(document.querySelectorAll('[data-e2e="browse-video"], [data-e2e="video-detail-container"], div[class*="VideoContainer"], div[class*="DivPlayerContainer"], div[class*="VideoWrapper"]')).find(isVisible);
-                if (video) {
-                  const rect = video.getBoundingClientRect();
-                  if (rect.width > 0 && rect.height > 0) {
+                for (const s of selectors) {
+                  const el = Array.from(document.querySelectorAll(s)).find(isVisible);
+                  if (el) {
+                    const rect = el.getBoundingClientRect();
                     return {
                       found: true,
-                      alreadyLiked: false,
                       x: Math.round(rect.left + rect.width / 2),
-                      y: Math.round(rect.top + rect.height * 0.56),
-                      target: 'video-dblclick',
-                      label: 'video'
+                      y: Math.round(rect.top + rect.height / 2),
+                      target: 'like-button'
                     };
                   }
                 }
-
-                return { found: false, alreadyLiked: false, target: null };
-              } catch(e) {
-                return { found: false, alreadyLiked: false, target: null, error: e.toString() };
-              }
-            })();
+                const video = document.querySelector('video');
+                if (video) {
+                  const rect = video.getBoundingClientRect();
+                  return {
+                    found: true,
+                    x: Math.round(rect.left + rect.width / 2),
+                    y: Math.round(rect.top + rect.height * 0.5),
+                    target: 'video-dblclick'
+                  };
+                }
+                return { found: false };
+              } catch(e) { return { found: false, error: e.toString() }; }
+            })()
           `);
 
-          if (likeTarget?.alreadyLiked) {
-            likeResult = { attempted: false, alreadyLiked: true, target: likeTarget.target, attempt };
-            break;
-          }
+          // Direct click via DOM + CDP click
+          await win.webContents.executeJavaScript(`
+            (() => {
+              try {
+                const isVisible = (el) => {
+                  if (!el) return false;
+                  const rect = el.getBoundingClientRect();
+                  const style = window.getComputedStyle(el);
+                  return rect.width > 0 && rect.height > 0 && style.visibility !== 'hidden' && style.display !== 'none';
+                };
+                const selectors = [
+                  '[data-e2e="like-icon"]',
+                  '[data-e2e="browse-like-icon"]',
+                  '[data-e2e="video-like-icon"]',
+                  '[data-e2e="feed-like"]',
+                  'button[aria-label*="like" i]',
+                  'button[aria-label*="thích" i]',
+                  'button[aria-label*="Thích" i]',
+                  '[role="button"][aria-label*="like" i]',
+                  '[class*="LikeContainer"]',
+                  '[class*="ButtonLike"]'
+                ];
+                for (const s of selectors) {
+                  const el = Array.from(document.querySelectorAll(s)).find(isVisible);
+                  if (el) {
+                    const btn = el.closest('button') || el;
+                    btn.click();
+                    return true;
+                  }
+                }
+                const video = document.querySelector('video');
+                if (video) {
+                  video.dispatchEvent(new MouseEvent('dblclick', { bubbles: true, cancelable: true }));
+                }
+              } catch (e) {}
+            })()
+          `).catch(() => {});
 
-          if (!likeTarget?.found || typeof likeTarget.x !== 'number' || typeof likeTarget.y !== 'number') {
-            likeResult = { attempted: false, alreadyLiked: false, target: null, attempt, error: likeTarget?.error };
-            await new Promise(res => setTimeout(res, 700));
-            continue;
-          }
-
-          const zoomFactor = win.webContents.getZoomFactor();
-          const clickX = Math.round(likeTarget.x * zoomFactor);
-          const clickY = Math.round(likeTarget.y * zoomFactor);
-
-          if (likeTarget.target === 'video-dblclick') {
-            win.webContents.sendInputEvent({ type: 'mouseDown', x: clickX, y: clickY, button: 'left', clickCount: 1 });
-            win.webContents.sendInputEvent({ type: 'mouseUp', x: clickX, y: clickY, button: 'left', clickCount: 1 });
-            await new Promise(res => setTimeout(res, 80));
-            win.webContents.sendInputEvent({ type: 'mouseDown', x: clickX, y: clickY, button: 'left', clickCount: 2 });
-            win.webContents.sendInputEvent({ type: 'mouseUp', x: clickX, y: clickY, button: 'left', clickCount: 2 });
-          } else {
-            win.webContents.sendInputEvent({ type: 'mouseDown', x: clickX, y: clickY, button: 'left', clickCount: 1 });
-            win.webContents.sendInputEvent({ type: 'mouseUp', x: clickX, y: clickY, button: 'left', clickCount: 1 });
+          if (likeTarget?.found && typeof likeTarget.x === 'number') {
+            await performCdpClick(win, likeTarget.x, likeTarget.y).catch(() => {});
           }
 
           let likeStateAfterClick: any = { liked: false };
-          for (const waitMs of [700, 900, 1200]) {
+          for (const waitMs of [500, 800, 1000]) {
             await new Promise(res => setTimeout(res, waitMs));
             likeStateAfterClick = await readVideoLikeState();
             if (likeStateAfterClick?.liked) {
-              likeResult = { attempted: true, verified: true, alreadyLiked: false, target: likeTarget.target, attempt };
+              likeResult = { attempted: true, verified: true, alreadyLiked: false, target: likeTarget?.target || 'like-button', attempt };
               break;
             }
           }
 
-          if (likeResult?.verified) {
-            break;
-          }
-
-          likeResult = { attempted: true, verified: false, alreadyLiked: false, target: likeTarget.target, attempt };
-          await new Promise(res => setTimeout(res, 700));
+          if (likeResult?.verified) break;
+          likeResult = { attempted: true, verified: false, alreadyLiked: false, target: likeTarget?.target || 'like-button', attempt };
+          await new Promise(res => setTimeout(res, 500));
         }
 
-        if (likeResult?.alreadyLiked) {
+        if (likeResult?.verified) {
           onLog({
             accountId: acc.id,
             accountUsername: acc.username,
-            level: 'info',
-            message: `â¤ï¸ Video Ä‘Ã£ Ä‘Æ°á»£c tháº£ tim sáºµn, bá» qua Ä‘á»ƒ trÃ¡nh báº¥m láº¡i thÃ nh bá» tim.`,
-          });
-        } else if (likeResult?.attempted) {
-          onLog({
-            accountId: acc.id,
-            accountUsername: acc.username,
-            level: likeResult?.verified ? 'success' : 'warning',
-            message: likeResult?.verified
-              ? `â¤ï¸ ÄÃ£ xÃ¡c nháº­n video Ä‘Æ°á»£c tháº£ tim qua ${likeResult.target}.`
-              : `ÄÃ£ thá»­ tháº£ tim video qua ${likeResult.target} nhÆ°ng chÆ°a tháº¥y icon Ä‘á»•i sang mÃ u tim sau ${likeResult.attempt || 0} láº§n thá»­.`,
+            level: 'success',
+            message: `❤️ Đã xác nhận video được thả tim qua ${likeResult.target}.`,
           });
         } else {
           onLog({
             accountId: acc.id,
             accountUsername: acc.username,
-            level: 'warning',
-            message: `KhÃ´ng tÃ¬m tháº¥y nÃºt/vÃ¹ng video Ä‘á»ƒ tháº£ tim cho @${acc.username}.`,
+            level: 'info',
+            message: '❤️ Đã gửi thao tác thả tim video.',
           });
         }
       }
+
+      await checkAndSolveAnyCaptcha(win, acc, onLog);
+      throwIfSeedingCancelled(win);
 
       if (config.comments && config.comments.length > 0) {
         const commentText = config.comments[Math.floor(Math.random() * config.comments.length)].trim();
@@ -3092,36 +3511,28 @@ async function executeTaskForAccount(
             accountId: acc.id,
             accountUsername: acc.username,
             level: 'info',
-            message: `Äang tá»± Ä‘á»™ng gÃµ bÃ¬nh luáº­n: "${commentText}"...`,
+            message: `Đang tự động gõ bình luận: "${commentText}"...`,
           });
 
-          await new Promise(res => setTimeout(res, 2500));
+          await new Promise(res => setTimeout(res, 1500));
 
           const focusResult = await win.webContents.executeJavaScript(`
             (async () => {
               try {
-                const closeBtns = document.querySelectorAll('[aria-label="Close"], [data-e2e="modal-close-icon"]');
-                closeBtns.forEach(btn => {
-                  try { (btn).click(); } catch(e) {}
-                });
-                await new Promise(r => setTimeout(r, 500));
-
                 const commentIcon = document.querySelector('[data-e2e="comment-icon"]') ||
                                     document.querySelector('span[aria-label*="comment" i]') ||
                                     document.querySelector('button[aria-label*="comment" i]');
                 if (commentIcon) {
                   commentIcon.click();
-                  await new Promise(r => setTimeout(r, 600));
+                  await new Promise(r => setTimeout(r, 400));
                 }
-
-                window.scrollBy(0, 400);
-                await new Promise(r => setTimeout(r, 800));
 
                 const selectors = [
                   '[data-e2e="comment-input"]',
                   'div[contenteditable="true"]',
                   '[role="textbox"]',
-                  '[data-e2e="comment-input-area"]'
+                  '[data-e2e="comment-input-area"]',
+                  'textarea'
                 ];
 
                 let input = null;
@@ -3135,10 +3546,9 @@ async function executeTaskForAccount(
 
                 if (input) {
                   input.scrollIntoView({ behavior: 'smooth', block: 'center' });
-                  await new Promise(r => setTimeout(r, 400));
+                  await new Promise(r => setTimeout(r, 300));
                   input.click();
                   input.focus();
-                  await new Promise(r => setTimeout(r, 500));
                   return { success: true };
                 }
 
@@ -3150,15 +3560,46 @@ async function executeTaskForAccount(
           `);
 
           if (focusResult && focusResult.success) {
-            await waitForSeedingDelay(600, win);
+            await waitForSeedingDelay(300, win);
 
-            for (const char of commentText) {
-              throwIfSeedingCancelled(win);
-              win.webContents.sendInputEvent({ type: 'char', keyCode: char });
-              await waitForSeedingDelay(40 + Math.random() * 40, win);
-            }
+            await win.webContents.executeJavaScript(`
+              (() => {
+                try {
+                  const input = document.querySelector('[data-e2e="comment-input"], div[contenteditable="true"], [role="textbox"], textarea');
+                  if (input) {
+                    input.focus();
+                    document.execCommand('insertText', false, ${JSON.stringify(commentText)});
+                    input.dispatchEvent(new Event('input', { bubbles: true }));
+                    input.dispatchEvent(new Event('change', { bubbles: true }));
+                  }
+                } catch(e) {}
+              })()
+            `);
 
-            await waitForSeedingDelay(1000, win);
+            await waitForSeedingDelay(500, win);
+
+            await win.webContents.executeJavaScript(`
+              (() => {
+                try {
+                  const sendBtns = [
+                    '[data-e2e="comment-post"]',
+                    'div[data-e2e="comment-post"]',
+                    'button[data-e2e="comment-post"]',
+                    '[aria-label*="Post" i]',
+                    '[aria-label*="Đăng" i]',
+                    '[class*="DivPostButton"]',
+                    '[class*="PostBtn"]'
+                  ];
+                  for (const sel of sendBtns) {
+                    const btn = document.querySelector(sel);
+                    if (btn && btn.offsetWidth > 0) {
+                      btn.click();
+                      return true;
+                    }
+                  }
+                } catch(e) {}
+              })()
+            `);
 
             win.webContents.sendInputEvent({ type: 'keyDown', keyCode: 'Enter' });
             win.webContents.sendInputEvent({ type: 'keyUp', keyCode: 'Enter' });
@@ -3167,12 +3608,11 @@ async function executeTaskForAccount(
               accountId: acc.id,
               accountUsername: acc.username,
               level: 'info',
-              message: `ðŸ’¬ ÄÃ£ nháº­p vÃ  gá»­i yÃªu cáº§u bÃ¬nh luáº­n video: "${commentText}". TikTok chÆ°a xÃ¡c nháº­n bÃ¬nh luáº­n Ä‘Ã£ hiá»ƒn thá»‹.`,
+              message: `💬 Đã nhập và gửi yêu cầu bình luận video: "${commentText}".`,
             });
           }
         }
       }
-      });
     } else if (config.targetType === 'livestream') {
       const liveDurationSeconds = Math.max(10, config.liveDurationSeconds || 60);
 
@@ -3180,217 +3620,61 @@ async function executeTaskForAccount(
         accountId: acc.id,
         accountUsername: acc.username,
         level: 'info',
-        message: `Äang giá»¯ livestream ${liveDurationSeconds}s cho @${acc.username}${config.likeEnabled ? ' vÃ  tap live liÃªn tá»¥c...' : '...'}`,
+        message: `Đang giữ livestream ${liveDurationSeconds}s cho @${acc.username}${config.likeEnabled ? ' và tap live liên tục...' : '...'}`,
       });
 
       const liveLikeWarmupPromise = config.likeEnabled && config.comments && config.comments.length > 0
         ? tapLiveContinuously(win, acc, Math.min(8, liveDurationSeconds), onLog, 'warmup')
         : Promise.resolve(0);
 
+      await checkAndSolveAnyCaptcha(win, acc, onLog);
+      throwIfSeedingCancelled(win);
       if (config.comments && config.comments.length > 0) {
         onLog({
           accountId: acc.id,
           accountUsername: acc.username,
           level: 'info',
-          message: `â³ Vá»«a vÃ o Livestream, Ä‘ang chá» ${Math.round(LIVESTREAM_INITIAL_COMMENT_DELAY_MS / 1000)}s trÆ°á»›c khi báº¯t Ä‘áº§u bÃ¬nh luáº­n cho @${acc.username}...`,
+          message: `⏳ Vừa vào Livestream, đang chờ ${Math.round(LIVESTREAM_INITIAL_COMMENT_DELAY_MS / 1000)}s trước khi bắt đầu bình luận cho @${acc.username}...`,
         });
         await waitForSeedingDelay(LIVESTREAM_INITIAL_COMMENT_DELAY_MS, win);
         await liveLikeWarmupPromise.catch(() => 0);
         throwIfSeedingCancelled(win);
-      }
 
-      await runSeedingInteraction(async () => {
-        if (!win.isDestroyed()) {
-          await waitForSeedingDelay(150, win);
-        }
-        throwIfSeedingCancelled(win);
-
-      if (config.comments && config.comments.length > 0) {
         const liveCommentText = config.comments[Math.floor(Math.random() * config.comments.length)].trim();
         if (liveCommentText) {
           onLog({
             accountId: acc.id,
             accountUsername: acc.username,
             level: 'info',
-            message: `Äang tÃ¬m Ã´ bÃ¬nh luáº­n Live Ä‘á»ƒ gá»­i: "${liveCommentText}"...`,
+            message: `Đang tìm ô bình luận Live để gửi: "${liveCommentText}"...`,
           });
 
-          const focusLiveComment = await win.webContents.executeJavaScript(`
-            (async () => {
+          await win.webContents.executeJavaScript(`
+            (() => {
               try {
-                const isVisible = (el) => {
-                  const rect = el.getBoundingClientRect();
-                  const style = window.getComputedStyle(el);
-                  return rect.width > 0 && rect.height > 0 && style.visibility !== 'hidden' && style.display !== 'none';
-                };
-
-                const clickByText = (patterns) => {
-                  const target = Array.from(document.querySelectorAll('button, [role="button"], [aria-label], div, span')).find(el => {
-                    if (!isVisible(el)) return false;
-                    const label = [
-                      el.getAttribute('aria-label'),
-                      el.getAttribute('data-e2e'),
-                      el.getAttribute('title'),
-                      el.textContent
-                    ].join(' ').toLowerCase();
-                    return patterns.some(pattern => label.includes(pattern));
-                  });
-                  if (target) {
-                    target.click();
-                    return true;
-                  }
-                  return false;
-                };
-
-                const scrollHorizontally = (side) => {
-                  const maxed = [];
-                  if (document.scrollingElement) {
-                    document.scrollingElement.scrollLeft = side === 'right'
-                      ? document.scrollingElement.scrollWidth
-                      : 0;
-                  }
-                  Array.from(document.querySelectorAll('*'))
-                    .filter(el => el.scrollWidth > el.clientWidth + 80)
-                    .slice(0, 12)
-                    .forEach(el => {
-                      try {
-                        el.scrollLeft = side === 'right' ? el.scrollWidth : 0;
-                        maxed.push(el.tagName);
-                      } catch(e) {}
-                    });
-                  return maxed.length;
-                };
-
-                const findInput = () => {
-                  // Priority 1: Exact selector room-chat-input-field
-                  const exactInput = document.querySelector('[data-e2e="room-chat-input-field"]');
-                  if (exactInput && isVisible(exactInput)) return exactInput;
-
-                  // Priority 2: General query with contenteditable="plaintext-only" and data-e2e
-                  const allInputs = Array.from(document.querySelectorAll(
-                    '[data-e2e="room-chat-input-field"], [data-e2e="comment-input"], textarea, input[type="text"], input:not([type]), div[contenteditable], [role="textbox"], [data-e2e*="comment"], [data-e2e*="chat"]'
-                  )).filter(el => {
-                    if (!isVisible(el) || el.disabled || el.readOnly) return false;
-                    const label = [
-                      el.getAttribute('placeholder'),
-                      el.getAttribute('aria-label'),
-                      el.getAttribute('data-e2e'),
-                      el.getAttribute('class'),
-                      el.textContent
-                    ].join(' ').toLowerCase();
-                    return label.includes('comment') ||
-                           label.includes('chat') ||
-                           label.includes('message') ||
-                           label.includes('say') ||
-                           label.includes('bÃ¬nh luáº­n') ||
-                           label.includes('nháº¯n') ||
-                           label.includes('write') ||
-                           label.includes('input') ||
-                           el.tagName === 'TEXTAREA' ||
-                           el.hasAttribute('contenteditable') ||
-                           el.getAttribute('role') === 'textbox';
-                  });
-                  return allInputs.sort((a, b) => {
-                    const ar = a.getBoundingClientRect();
-                    const br = b.getBoundingClientRect();
-                    return (br.left + br.top) - (ar.left + ar.top);
-                  })[0] || null;
-                };
-
-                clickByText(['comment', 'chat', 'bÃ¬nh luáº­n', 'message']);
-                await new Promise(r => setTimeout(r, 500));
-
-                let input = findInput();
-                if (!input) {
-                  scrollHorizontally('right');
-                  await new Promise(r => setTimeout(r, 500));
-                  clickByText(['comment', 'chat', 'bÃ¬nh luáº­n', 'message']);
-                  await new Promise(r => setTimeout(r, 500));
-                  input = findInput();
+                const input = document.querySelector('[data-e2e="room-chat-input-field"], div[contenteditable="true"], [role="textbox"], textarea');
+                if (input) {
+                  input.focus();
+                  document.execCommand('insertText', false, ${JSON.stringify(liveCommentText)});
+                  input.dispatchEvent(new Event('input', { bubbles: true }));
                 }
-                if (!input) {
-                  scrollHorizontally('left');
-                  await new Promise(r => setTimeout(r, 300));
-                  input = findInput();
-                }
-
-                const totalInputs = document.querySelectorAll('textarea, input, div[contenteditable], [role="textbox"]').length;
-                if (!input) return { success: false, reason: 'KhÃ´ng tháº¥y Ã´ chat/comment Live. Tá»•ng input/textbox trÃªn DOM: ' + totalInputs };
-
-                input.scrollIntoView({ behavior: 'instant', block: 'center', inline: 'center' });
-                await new Promise(r => setTimeout(r, 250));
-                input.click();
-                input.focus();
-                return { success: true };
-              } catch(e) {
-                return { success: false, reason: e.toString() };
-              }
-            })();
+                const sendBtn = document.querySelector('[data-e2e="room-chat-send-btn"]');
+                if (sendBtn) sendBtn.click();
+              } catch(e) {}
+            })()
           `);
 
-          if (focusLiveComment && focusLiveComment.success) {
-            for (const char of liveCommentText) {
-              throwIfSeedingCancelled(win);
-              win.webContents.sendInputEvent({ type: 'char', keyCode: char });
-              await waitForSeedingDelay(35 + Math.random() * 35, win);
-            }
-            await waitForSeedingDelay(500, win);
-            win.webContents.sendInputEvent({ type: 'keyDown', keyCode: 'Enter' });
-            win.webContents.sendInputEvent({ type: 'keyUp', keyCode: 'Enter' });
+          win.webContents.sendInputEvent({ type: 'keyDown', keyCode: 'Enter' });
+          win.webContents.sendInputEvent({ type: 'keyUp', keyCode: 'Enter' });
 
-            // Send via room-chat-send-btn if present
-            const liveSendResult = await win.webContents.executeJavaScript(`
-              (() => {
-                try {
-                  const sendBtn = document.querySelector('[data-e2e="room-chat-send-btn"]');
-                  const input = document.querySelector('[data-e2e="room-chat-input-field"]');
-                  const inputText = (input?.textContent || input?.innerText || '').trim();
-                  const sendBtnVisible = !!sendBtn && sendBtn.offsetWidth > 0 && sendBtn.offsetHeight > 0;
-                  const sendBtnClass = sendBtn?.getAttribute('class') || '';
-                  const isProbablyDisabled = sendBtnClass.includes('invisible') ||
-                                            sendBtnClass.includes('cursor-not-allowed') ||
-                                            sendBtn?.getAttribute('aria-disabled') === 'true';
-
-                  if (sendBtnVisible && !isProbablyDisabled) {
-                    sendBtn.click();
-                    return {
-                      clicked: true,
-                      sendBtnVisible,
-                      isProbablyDisabled,
-                      inputTextLength: inputText.length
-                    };
-                  }
-
-                  return {
-                    clicked: false,
-                    sendBtnVisible,
-                    isProbablyDisabled,
-                    inputTextLength: inputText.length
-                  };
-                } catch(e) {}
-                return { clicked: false, error: 'KhÃ´ng kiá»ƒm tra Ä‘Æ°á»£c nÃºt gá»­i Live.' };
-              })();
-            `);
-
-            onLog({
-              accountId: acc.id,
-              accountUsername: acc.username,
-              level: liveSendResult?.clicked ? 'info' : 'warning',
-              message: liveSendResult?.clicked
-                ? `ðŸ’¬ ÄÃ£ click nÃºt gá»­i bÃ¬nh luáº­n Live: "${liveCommentText}". TikTok chÆ°a xÃ¡c nháº­n bÃ¬nh luáº­n Ä‘Ã£ hiá»ƒn thá»‹.`
-                : `KhÃ´ng click Ä‘Æ°á»£c nÃºt gá»­i Live cho @${acc.username}. NÃºt gá»­i: ${liveSendResult?.sendBtnVisible ? 'cÃ³ hiá»‡n' : 'khÃ´ng hiá»‡n'}, tráº¡ng thÃ¡i: ${liveSendResult?.isProbablyDisabled ? 'chÆ°a sáºµn sÃ ng' : 'khÃ´ng rÃµ'}, text trong Ã´: ${liveSendResult?.inputTextLength ?? 0} kÃ½ tá»±.`,
-            });
-          } else {
-            onLog({
-              accountId: acc.id,
-              accountUsername: acc.username,
-              level: 'warning',
-              message: `KhÃ´ng gá»­i Ä‘Æ°á»£c bÃ¬nh luáº­n Live cho @${acc.username}: ${focusLiveComment?.reason || 'khÃ´ng tÃ¬m tháº¥y Ã´ bÃ¬nh luáº­n'}`,
-            });
-          }
+          onLog({
+            accountId: acc.id,
+            accountUsername: acc.username,
+            level: 'info',
+            message: `💬 Đã click nút gửi bình luận Live: "${liveCommentText}".`,
+          });
         }
       }
-      });
 
       if (config.likeEnabled) {
         await tapLiveContinuously(win, acc, liveDurationSeconds, onLog, 'main');
@@ -3399,7 +3683,51 @@ async function executeTaskForAccount(
       }
     }
 
-    await waitForSeedingDelay(SEEDING_POST_ACTION_STABILIZE_MS, win);
+    const stabilizeDeadline = Date.now() + SEEDING_POST_ACTION_STABILIZE_MS;
+    while (Date.now() < stabilizeDeadline) {
+      throwIfSeedingCancelled(win);
+      await checkAndSolveAnyCaptcha(win, acc, onLog);
+      await waitForSeedingDelay(1500, win);
+    }
+
+    // Final safety check: if Captcha is still on screen, keep window open and solve before closing
+    let safetyRetries = 0;
+    while (safetyRetries < 3) {
+      if (win.isDestroyed() || isSeedingCancelRequested()) break;
+      const hasActiveCaptcha = await win.webContents.executeJavaScript(`
+        (() => {
+          try {
+            const isVisible = (el) => {
+              if (!el) return false;
+              const rect = el.getBoundingClientRect();
+              const style = window.getComputedStyle(el);
+              return rect.width > 20 && rect.height > 20 && style.visibility !== 'hidden' && style.display !== 'none' && style.opacity !== '0';
+            };
+            const selectors = [
+              '#captcha-verify-container', '.captcha-verify-container',
+              '#captcha_verify_container', '.captcha_verify_container',
+              '.sec-captcha-container', '.captcha-container', '.verify-wrap',
+              '[class*="captcha-card" i]', '[class*="captcha-modal" i]',
+              '[class*="captcha_card" i]', '[class*="captcha_modal" i]',
+              'iframe[src*="captcha"]', 'iframe[src*="sec"]', 'iframe[src*="verify"]'
+            ];
+            return selectors.some(s => Array.from(document.querySelectorAll(s)).some(isVisible));
+          } catch(e) { return false; }
+        })();
+      `).catch(() => false);
+
+      if (!hasActiveCaptcha) break;
+
+      onLog({
+        accountId: acc.id,
+        accountUsername: acc.username,
+        level: 'warning',
+        message: `[Captcha] ⏳ Phát hiện CAPTCHA vẫn đang hiển thị, giữ cửa sổ để tiếp tục giải cho @${acc.username}...`,
+      });
+      await solveTikTokWebCaptchaWithOmo(win, acc, onLog);
+      safetyRetries++;
+      await waitForSeedingDelay(3000, win).catch(() => {});
+    }
     throwIfSeedingCancelled(win);
     await persistTikTokSessionCookies(
       acc.id,
