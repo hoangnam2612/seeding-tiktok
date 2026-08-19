@@ -4,6 +4,7 @@ import { MailOtpService } from './nest/accounts/mail-otp.service';
 import { generateTotpToken } from './nest/accounts/totp.helper';
 import * as fs from 'fs';
 import * as path from 'path';
+import { ensurePersistentDataDir } from './data-dir';
 
 const mailOtpService = new MailOtpService();
 
@@ -43,10 +44,76 @@ type AccountSessionUpdate = {
   status: 'authenticated';
   lastUsed: string;
 };
+type ProxyAuthCredentials = {
+  username: string;
+  password: string;
+};
+type ParsedProxyConfig = {
+  proxyRules: string;
+  auth?: ProxyAuthCredentials;
+};
 
 let activeSeedingInteractions = 0;
 const pendingSeedingInteractions: Array<() => void> = [];
 let sessionPreparationQueue = Promise.resolve();
+let currentSeedingRun: { cancelRequested: boolean; reason?: string } | null = null;
+
+class SeedingCancelledError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'SeedingCancelledError';
+  }
+}
+
+function requestSeedingCancel(reason: string) {
+  if (currentSeedingRun && !currentSeedingRun.cancelRequested) {
+    currentSeedingRun.cancelRequested = true;
+    currentSeedingRun.reason = reason;
+  }
+}
+
+function isSeedingCancelRequested(): boolean {
+  return !!currentSeedingRun?.cancelRequested;
+}
+
+function throwIfSeedingCancelled(win?: BrowserWindow) {
+  if (isSeedingCancelRequested()) {
+    throw new SeedingCancelledError(currentSeedingRun?.reason || 'Seeding task was cancelled.');
+  }
+  if (win?.isDestroyed()) {
+    throw new SeedingCancelledError('Seeding browser window was closed.');
+  }
+}
+
+function waitForSeedingDelay(ms: number, win?: BrowserWindow): Promise<void> {
+  throwIfSeedingCancelled(win);
+
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(cleanupAndResolve, ms);
+
+    const onClosed = () => {
+      cleanup();
+      reject(new SeedingCancelledError('Seeding browser window was closed.'));
+    };
+
+    function cleanup() {
+      clearTimeout(timer);
+      win?.removeListener('closed', onClosed);
+    }
+
+    function cleanupAndResolve() {
+      cleanup();
+      try {
+        throwIfSeedingCancelled(win);
+        resolve();
+      } catch (err) {
+        reject(err);
+      }
+    }
+
+    win?.once('closed', onClosed);
+  });
+}
 
 async function runSeedingInteraction<T>(task: () => Promise<T>): Promise<T> {
   if (activeSeedingInteractions >= SEEDING_ACTION_CONCURRENCY) {
@@ -328,6 +395,212 @@ async function waitForTikTokSurfaceReady(
   };
 }
 
+function normalizeProxyProtocol(proxyType?: string): 'http' | 'socks5' {
+  return proxyType === 'socks5' ? 'socks5' : 'http';
+}
+
+function parseProxyConfig(proxyStr?: string, proxyType: string = 'http'): ParsedProxyConfig | null {
+  const rawProxy = proxyStr?.trim();
+  if (!rawProxy) return null;
+
+  const defaultProtocol = normalizeProxyProtocol(proxyType);
+  const withProtocol = /^[a-z][a-z0-9+.-]*:\/\//i.test(rawProxy)
+    ? rawProxy
+    : `${defaultProtocol}://${rawProxy}`;
+  const parsed = new URL(withProtocol);
+  const protocol = parsed.protocol.replace(':', '') === 'socks5' ? 'socks5' : 'http';
+  const hostname = parsed.hostname;
+  const port = parsed.port;
+
+  if (!hostname || !port) {
+    throw new Error(`Proxy thieu host/port: ${proxyStr}`);
+  }
+
+  const auth = parsed.username || parsed.password
+    ? {
+        username: decodeURIComponent(parsed.username),
+        password: decodeURIComponent(parsed.password),
+      }
+    : undefined;
+
+  return {
+    proxyRules: `${protocol}://${hostname}:${port}`,
+    auth,
+  };
+}
+
+function parseLegacyProxyConfig(proxyStr: string, proxyType: string = 'http'): ParsedProxyConfig | null {
+  const formattedProxy = proxyStr.trim();
+  const parts = formattedProxy.split(':');
+
+  if (parts.length === 4 && !formattedProxy.includes('@')) {
+    const [ip, port, user, pass] = parts;
+    return parseProxyConfig(`${encodeURIComponent(user)}:${encodeURIComponent(pass)}@${ip}:${port}`, proxyType);
+  }
+
+  return parseProxyConfig(proxyStr, proxyType);
+}
+
+function attachProxyAuthHandler(win: BrowserWindow, auth?: ProxyAuthCredentials) {
+  if (!auth) return;
+
+  win.webContents.on('login', (event, _request, authInfo, callback) => {
+    if (!authInfo.isProxy) return;
+    event.preventDefault();
+    callback(auth.username, auth.password);
+  });
+}
+
+function escapeHtml(value: string): string {
+  return value
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+async function showBrowserLoadProblem(
+  win: BrowserWindow,
+  title: string,
+  details: string[]
+): Promise<void> {
+  if (win.isDestroyed()) return;
+
+  const html = `
+    <!doctype html>
+    <html>
+      <head>
+        <meta charset="utf-8" />
+        <style>
+          body {
+            margin: 0;
+            font-family: Arial, sans-serif;
+            background: #0f172a;
+            color: #e5e7eb;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            min-height: 100vh;
+          }
+          main {
+            width: min(760px, calc(100vw - 48px));
+            border: 1px solid #334155;
+            background: #111827;
+            border-radius: 8px;
+            padding: 24px;
+            box-sizing: border-box;
+          }
+          h1 {
+            margin: 0 0 14px;
+            font-size: 20px;
+            color: #f87171;
+          }
+          p {
+            margin: 8px 0;
+            line-height: 1.5;
+            color: #cbd5e1;
+          }
+          code {
+            color: #93c5fd;
+            word-break: break-all;
+          }
+        </style>
+      </head>
+      <body>
+        <main>
+          <h1>${escapeHtml(title)}</h1>
+          ${details.map(detail => `<p>${escapeHtml(detail)}</p>`).join('')}
+          <p>Hay thu proxy khac hoac kiem tra lai IP, port, user, pass va loai HTTP/SOCKS5.</p>
+        </main>
+      </body>
+    </html>
+  `;
+
+  await win.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(html)}`).catch(() => undefined);
+}
+
+async function loadLoginStartPage(
+  win: BrowserWindow,
+  customSession: Electron.Session,
+  url: string,
+  acc: { id: string; username?: string },
+  proxyStr: string | undefined,
+  proxyConfig: ParsedProxyConfig | null,
+  onLog: (log: Omit<TaskLogItem, 'id' | 'timestamp'>) => void,
+  onAccountStatusChange: (id: string, status: AccountStatus) => void,
+  contextLabel: string
+): Promise<void> {
+  let loadFailed: { errorCode?: number; errorDescription?: string; validatedURL?: string } | null = null;
+  const onFail = (
+    _event: Electron.Event,
+    errorCode: number,
+    errorDescription: string,
+    validatedURL: string,
+    isMainFrame: boolean
+  ) => {
+    if (!isMainFrame || errorCode === -3) return;
+    loadFailed = { errorCode, errorDescription, validatedURL };
+  };
+
+  win.webContents.on('did-fail-load', onFail);
+  try {
+    await win.loadURL(url).catch((err: any) => {
+      loadFailed = {
+        errorCode: err?.errno || err?.code,
+        errorDescription: err?.message || String(err),
+        validatedURL: url,
+      };
+    });
+
+    await new Promise(res => setTimeout(res, 6000));
+    if (win.isDestroyed()) return;
+
+    if (!loadFailed) {
+      let snapshot = await getTikTokPageSnapshot(win);
+      if (snapshot.isBlank) {
+        await clearTikTokRenderCache(customSession);
+        await win.reload();
+        await new Promise(res => setTimeout(res, 4500));
+        if (win.isDestroyed()) return;
+        snapshot = await getTikTokPageSnapshot(win);
+      }
+
+      if (!snapshot.isBlank) return;
+
+      onLog({
+        accountId: acc.id,
+        accountUsername: acc.username,
+        level: 'warning',
+        message: `[Proxy] ${contextLabel} @${acc.username || acc.id} render trang trang sau khi load TikTok. Proxy=${proxyConfig?.proxyRules || proxyStr || 'none'}.`,
+      });
+      onAccountStatusChange(acc.id, 'error');
+      await showBrowserLoadProblem(win, 'TikTok dang bi trang', [
+        `Account: @${acc.username || acc.id}`,
+        `Proxy: ${proxyConfig?.proxyRules || proxyStr || 'none'}`,
+        'Da reload va clear cache nhung TikTok van khong render noi dung.',
+      ]);
+      return;
+    }
+
+    onLog({
+      accountId: acc.id,
+      accountUsername: acc.username,
+      level: 'error',
+      message: `[Proxy] ${contextLabel} @${acc.username || acc.id} khong load duoc TikTok qua proxy ${proxyConfig?.proxyRules || proxyStr || 'none'}: ${loadFailed.errorDescription || loadFailed.errorCode || 'unknown error'}.`,
+    });
+    onAccountStatusChange(acc.id, 'error');
+
+    await showBrowserLoadProblem(win, 'Khong load duoc TikTok qua proxy', [
+      `Account: @${acc.username || acc.id}`,
+      `Proxy: ${proxyConfig?.proxyRules || proxyStr || 'none'}${proxyConfig?.auth ? ' (co user/pass)' : ''}`,
+      `Loi: ${loadFailed.errorDescription || loadFailed.errorCode || 'unknown error'}`,
+    ]);
+  } finally {
+    win.webContents.removeListener('did-fail-load', onFail);
+  }
+}
+
 async function detectTikTokLoggedOutState(win: BrowserWindow): Promise<{
   loggedOut: boolean;
   reason?: string;
@@ -509,25 +782,18 @@ async function configureSessionProxyAndCookies(
   proxyStr?: string,
   proxyType: string = 'http',
   options: { skipCookieInjectionIfSessionExists?: boolean } = {}
-) {
+): Promise<ParsedProxyConfig | null> {
+  let proxyConfig: ParsedProxyConfig | null = null;
+
   if (proxyStr && proxyStr.trim().length > 0) {
     try {
-      let formattedProxy = proxyStr.trim();
-      if (!formattedProxy.startsWith('http://') && !formattedProxy.startsWith('socks5://')) {
-        const parts = formattedProxy.split(':');
-        if (parts.length === 4) {
-          const [ip, port, user, pass] = parts;
-          formattedProxy = `http://${user}:${pass}@${ip}:${port}`;
-        } else if (parts.length === 2) {
-          formattedProxy = `${proxyType === 'socks5' ? 'socks5' : 'http'}://${parts[0]}:${parts[1]}`;
-        } else {
-          formattedProxy = `${proxyType === 'socks5' ? 'socks5' : 'http'}://${formattedProxy}`;
-        }
-      }
-      await customSession.setProxy({ proxyRules: formattedProxy });
-      console.log(`[Proxy] Configured proxy: ${formattedProxy}`);
+      proxyConfig = parseLegacyProxyConfig(proxyStr, proxyType);
+      await customSession.setProxy({ proxyRules: proxyConfig?.proxyRules || '' });
+      console.log(`[Proxy] Configured proxy: ${proxyConfig?.proxyRules || 'direct'}${proxyConfig?.auth ? ' [auth]' : ''}`);
     } catch (err) {
       console.error('[Proxy] Failed to set proxy:', err);
+      await customSession.setProxy({ proxyRules: '' }).catch(() => undefined);
+      proxyConfig = null;
     }
   } else {
     await customSession.setProxy({ proxyRules: '' });
@@ -539,7 +805,7 @@ async function configureSessionProxyAndCookies(
 
     if (options.skipCookieInjectionIfSessionExists && hasExistingSession) {
       console.log('[Cookie] Session cookie already exists. Skipped reinjecting cookies for seeding.');
-      return;
+      return proxyConfig;
     }
 
     const pairs = cookieStr.split(';').map(p => p.trim()).filter(p => p.length > 0);
@@ -604,6 +870,8 @@ async function configureSessionProxyAndCookies(
       console.warn(`[Cookie] KhÃ´ng inject Ä‘Æ°á»£c session cookie TikTok. Injected ${injectedCount}/${pairs.length}, skipped ${skippedCount}.`);
     }
   }
+
+  return proxyConfig;
 }
 
 async function runSessionPreparation<T>(task: () => Promise<T>): Promise<T> {
@@ -732,7 +1000,7 @@ async function loadTikTokUrlForSeeding(
 
 function getOmoCaptchaApiKey(): string {
   try {
-    const settingsPath = path.join(process.cwd(), 'data', 'settings.json');
+    const settingsPath = path.join(ensurePersistentDataDir(), 'settings.json');
     if (!fs.existsSync(settingsPath)) return '';
     const settings = JSON.parse(fs.readFileSync(settingsPath, 'utf-8'));
     return String(settings.omocaptchaApiKey || '').trim();
@@ -1916,6 +2184,7 @@ export function setupAutomationIPC(
       ...Array.from(loginWindows.values()),
       ...Array.from(seedingWindows.values()),
     ]);
+    requestSeedingCancel('Nguoi dung da dong tat ca trinh duyet seeding.');
 
     windows.forEach(win => {
       if (!win.isDestroyed()) {
@@ -1943,14 +2212,17 @@ export function setupAutomationIPC(
       username: string,
       cookie?: string,
       proxy?: string,
+      proxyType: string = 'http',
       password?: string,
       email?: string,
       passMail?: string,
-      twoFactor?: string
+      twoFactor?: string,
+      muteBrowserAudio: boolean = true
     ) => {
       if (loginWindows.has(accountId)) {
         const existingWin = loginWindows.get(accountId)!;
         if (!existingWin.isDestroyed()) {
+          existingWin.webContents.setAudioMuted(muteBrowserAudio !== false);
           existingWin.focus();
           return { success: true, message: 'Window focused' };
         }
@@ -1963,8 +2235,8 @@ export function setupAutomationIPC(
         'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
       );
 
-      await runSessionPreparation(() =>
-        configureSessionProxyAndCookies(customSession, cookie, proxy, 'http', {
+      const proxyConfig = await runSessionPreparation(() =>
+        configureSessionProxyAndCookies(customSession, cookie, proxy, proxyType, {
           skipCookieInjectionIfSessionExists: true,
         })
       );
@@ -1982,6 +2254,8 @@ export function setupAutomationIPC(
       });
 
       loginWindows.set(accountId, win);
+      win.webContents.setAudioMuted(muteBrowserAudio !== false);
+      attachProxyAuthHandler(win, proxyConfig?.auth);
 
       const accInfo: AccountInfo = {
         id: accountId,
@@ -1996,18 +2270,18 @@ export function setupAutomationIPC(
       const hasCookie = hasValidTikTokCookieString(cookie);
 
       // LOAD URL (Try direct login URL if unauthenticated with password, or TikTok homepage)
-      if (!hasCookie && password) {
-        win.loadURL('https://www.tiktok.com/login/phone-or-email/email');
-      } else {
-        win.loadURL('https://www.tiktok.com');
-      }
+      const startUrl = !hasCookie && password
+        ? 'https://www.tiktok.com/login/phone-or-email/email'
+        : 'https://www.tiktok.com';
+      loadLoginStartPage(win, customSession, startUrl, { id: accountId, username }, proxy, proxyConfig, onLog, onAccountStatusChange, 'Mo Chrome')
+        .catch(err => console.error('[Proxy] Failed to diagnose login window load:', err));
 
 
       onLog({
         accountId,
         accountUsername: username,
         level: 'info',
-        message: `ðŸŒ ÄÃ£ má»Ÿ Chrome Profile cho @${username || accountId} ${proxy ? '[Proxy Active]' : ''}`,
+        message: `ðŸŒ ÄÃ£ má»Ÿ Chrome Profile cho @${username || accountId} ${proxy ? '[Proxy Active]' : ''}${muteBrowserAudio !== false ? ' [Muted]' : ''}`,
       });
 
       // ALWAYS launch monitorLoginFlow for background status & auto-login checking
@@ -2053,7 +2327,7 @@ export function setupAutomationIPC(
   // 2. Open Multi-Thread Account Chromes (Äa Luá»“ng)
   ipcMain.handle(
     'open-multi-account-chromes',
-    async (_event, accountIds: string[], maxThreads: number = 10, accountsData: any[]) => {
+    async (_event, accountIds: string[], maxThreads: number = 10, accountsData: any[], muteBrowserAudio: boolean = true) => {
       const selectedAccounts = accountsData.filter(a => accountIds.includes(a.id));
       if (selectedAccounts.length === 0) {
         return { success: false, message: 'No valid accounts selected' };
@@ -2086,7 +2360,7 @@ export function setupAutomationIPC(
           'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
         );
 
-        await runSessionPreparation(() =>
+        const proxyConfig = await runSessionPreparation(() =>
           configureSessionProxyAndCookies(customSession, acc.cookie, acc.proxy, acc.proxyType, {
             skipCookieInjectionIfSessionExists: true,
           })
@@ -2105,6 +2379,8 @@ export function setupAutomationIPC(
         });
 
         loginWindows.set(acc.id, win);
+        win.webContents.setAudioMuted(muteBrowserAudio !== false);
+        attachProxyAuthHandler(win, proxyConfig?.auth);
 
         const accInfo: AccountInfo = {
           id: acc.id,
@@ -2118,11 +2394,11 @@ export function setupAutomationIPC(
 
         const hasCookie = hasValidTikTokCookieString(acc.cookie);
 
-        if (!hasCookie && acc.password) {
-          win.loadURL('https://www.tiktok.com/login/phone-or-email/email');
-        } else {
-          win.loadURL('https://www.tiktok.com');
-        }
+        const startUrl = !hasCookie && acc.password
+          ? 'https://www.tiktok.com/login/phone-or-email/email'
+          : 'https://www.tiktok.com';
+        loadLoginStartPage(win, customSession, startUrl, acc, acc.proxy, proxyConfig, onLog, onAccountStatusChange, 'Mo Chrome da luong')
+          .catch(err => console.error('[Proxy] Failed to diagnose multi-login window load:', err));
 
         // ALWAYS launch monitorLoginFlow for multi-login windows
         monitorLoginFlow(win, customSession, accInfo, onLog, onAccountStatusChange, onAccountSessionUpdate);
@@ -2210,6 +2486,7 @@ export function setupAutomationIPC(
         : selectedAccounts.length;
       const queue = selectedAccounts.map((acc, index) => ({ acc, index }));
       let completedCount = 0;
+      currentSeedingRun = { cancelRequested: false };
 
       onLog({
         level: 'info',
@@ -2218,10 +2495,10 @@ export function setupAutomationIPC(
 
       const runSeedingWorker = async (workerIndex: number) => {
         if (workerIndex > 0) {
-          await new Promise(res => setTimeout(res, workerIndex * 800));
+          await waitForSeedingDelay(workerIndex * 800);
         }
 
-        while (queue.length > 0) {
+        while (queue.length > 0 && !isSeedingCancelRequested()) {
           const item = queue.shift();
           if (!item) return;
           const { acc, index } = item;
@@ -2234,6 +2511,7 @@ export function setupAutomationIPC(
           });
 
           try {
+            throwIfSeedingCancelled();
             await executeTaskForAccount(acc, config, onLog, onAccountStatusChange, onAccountSessionUpdate, loginWindows.size + index);
             completedCount++;
             onLog({
@@ -2243,6 +2521,17 @@ export function setupAutomationIPC(
               message: `[Worker ${workerIndex + 1}] HoÃ n thÃ nh @${acc.username} (${completedCount}/${selectedAccounts.length}).`,
             });
           } catch (err: any) {
+            if (err instanceof SeedingCancelledError) {
+              requestSeedingCancel(err.message);
+              onLog({
+                accountId: acc.id,
+                accountUsername: acc.username,
+                level: 'warning',
+                message: `[Worker ${workerIndex + 1}] Da dung seeding cho @${acc.username}: ${err.message}`,
+              });
+              return;
+            }
+
             completedCount++;
             onLog({
               accountId: acc.id,
@@ -2252,9 +2541,9 @@ export function setupAutomationIPC(
             });
           }
 
-          if (queue.length > 0 && effectiveMaxThreads < selectedAccounts.length) {
+          if (queue.length > 0 && effectiveMaxThreads < selectedAccounts.length && !isSeedingCancelRequested()) {
             const delayMs = Math.max(1, config.delaySeconds || 1) * 1000;
-            await new Promise(res => setTimeout(res, delayMs));
+            await waitForSeedingDelay(delayMs);
           }
         }
       };
@@ -2264,7 +2553,20 @@ export function setupAutomationIPC(
         (_, workerIndex) => runSeedingWorker(workerIndex)
       );
 
-      await Promise.all(workers);
+      try {
+        await Promise.all(workers);
+      } finally {
+        if (currentSeedingRun?.cancelRequested) {
+          onLog({
+            level: 'warning',
+            message: `Tac vu Seeding da dung: ${currentSeedingRun.reason || 'da huy'}`,
+          });
+          currentSeedingRun = null;
+          return { success: false, canceled: true };
+        }
+
+        currentSeedingRun = null;
+      }
 
       onLog({
         level: 'success',
@@ -2293,7 +2595,7 @@ async function executeTaskForAccount(
     'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
   );
 
-  await runSessionPreparation(() =>
+  const proxyConfig = await runSessionPreparation(() =>
     configureSessionProxyAndCookies(customSession, acc.cookie, acc.proxy, acc.proxyType, {
       skipCookieInjectionIfSessionExists: true,
     })
@@ -2324,11 +2626,16 @@ async function executeTaskForAccount(
     },
   });
   seedingWindows.add(win);
+  let closedByAutomation = false;
   win.on('closed', () => {
     seedingWindows.delete(win);
+    if (!closedByAutomation) {
+      requestSeedingCancel(`Nguoi dung da dong cua so seeding cua @${acc.username}.`);
+    }
   });
   const muteBrowserAudio = config.muteBrowserAudio !== false;
   win.webContents.setAudioMuted(muteBrowserAudio);
+  attachProxyAuthHandler(win, proxyConfig?.auth);
 
   try {
     if (muteBrowserAudio) {
@@ -2348,6 +2655,7 @@ async function executeTaskForAccount(
     });
 
     await loadTikTokUrlForSeeding(win, customSession, config.targetUrl, acc, onLog);
+    throwIfSeedingCancelled(win);
     win.webContents.setZoomFactor(TIKTOK_SEEDING_ZOOM);
     await win.webContents.executeJavaScript(`
       (() => {
@@ -2362,7 +2670,7 @@ async function executeTaskForAccount(
         } catch(e) {}
       })();
     `);
-    await new Promise(res => setTimeout(res, 800));
+    await waitForSeedingDelay(800, win);
 
     const authReady = await ensureAuthenticatedForSeeding(
       win,
@@ -2376,6 +2684,7 @@ async function executeTaskForAccount(
     if (!authReady) {
       throw new Error(`@${acc.username} is logged out and could not be re-authenticated.`);
     }
+    throwIfSeedingCancelled(win);
 
     win.webContents.setZoomFactor(TIKTOK_SEEDING_ZOOM);
     await win.webContents.executeJavaScript(`
@@ -2391,7 +2700,7 @@ async function executeTaskForAccount(
         } catch(e) {}
       })();
     `);
-    await new Promise(res => setTimeout(res, 800));
+    await waitForSeedingDelay(800, win);
 
     const hasInitialCaptcha = await win.webContents.executeJavaScript(`
       (() => {
@@ -2413,6 +2722,7 @@ async function executeTaskForAccount(
         return false;
       });
     }
+    throwIfSeedingCancelled(win);
 
     onLog({
       accountId: acc.id,
@@ -2422,6 +2732,7 @@ async function executeTaskForAccount(
     });
 
     const surfaceReady = await waitForTikTokSurfaceReady(win, config.targetType);
+    throwIfSeedingCancelled(win);
     onLog({
       accountId: acc.id,
       accountUsername: acc.username,
@@ -2434,8 +2745,9 @@ async function executeTaskForAccount(
     if (config.targetType === 'video') {
       await runSeedingInteraction(async () => {
         if (!win.isDestroyed()) {
-          await new Promise(res => setTimeout(res, 150));
+          await waitForSeedingDelay(150, win);
         }
+        throwIfSeedingCancelled(win);
 
       if (config.likeEnabled) {
         onLog({
@@ -2838,14 +3150,15 @@ async function executeTaskForAccount(
           `);
 
           if (focusResult && focusResult.success) {
-            await new Promise(res => setTimeout(res, 600));
+            await waitForSeedingDelay(600, win);
 
             for (const char of commentText) {
+              throwIfSeedingCancelled(win);
               win.webContents.sendInputEvent({ type: 'char', keyCode: char });
-              await new Promise(res => setTimeout(res, 40 + Math.random() * 40));
+              await waitForSeedingDelay(40 + Math.random() * 40, win);
             }
 
-            await new Promise(res => setTimeout(res, 1000));
+            await waitForSeedingDelay(1000, win);
 
             win.webContents.sendInputEvent({ type: 'keyDown', keyCode: 'Enter' });
             win.webContents.sendInputEvent({ type: 'keyUp', keyCode: 'Enter' });
@@ -2881,15 +3194,16 @@ async function executeTaskForAccount(
           level: 'info',
           message: `â³ Vá»«a vÃ o Livestream, Ä‘ang chá» ${Math.round(LIVESTREAM_INITIAL_COMMENT_DELAY_MS / 1000)}s trÆ°á»›c khi báº¯t Ä‘áº§u bÃ¬nh luáº­n cho @${acc.username}...`,
         });
-        await new Promise(res => setTimeout(res, LIVESTREAM_INITIAL_COMMENT_DELAY_MS));
+        await waitForSeedingDelay(LIVESTREAM_INITIAL_COMMENT_DELAY_MS, win);
         await liveLikeWarmupPromise.catch(() => 0);
-        if (win.isDestroyed()) return;
+        throwIfSeedingCancelled(win);
       }
 
       await runSeedingInteraction(async () => {
         if (!win.isDestroyed()) {
-          await new Promise(res => setTimeout(res, 150));
+          await waitForSeedingDelay(150, win);
         }
+        throwIfSeedingCancelled(win);
 
       if (config.comments && config.comments.length > 0) {
         const liveCommentText = config.comments[Math.floor(Math.random() * config.comments.length)].trim();
@@ -3016,10 +3330,11 @@ async function executeTaskForAccount(
 
           if (focusLiveComment && focusLiveComment.success) {
             for (const char of liveCommentText) {
+              throwIfSeedingCancelled(win);
               win.webContents.sendInputEvent({ type: 'char', keyCode: char });
-              await new Promise(res => setTimeout(res, 35 + Math.random() * 35));
+              await waitForSeedingDelay(35 + Math.random() * 35, win);
             }
-            await new Promise(res => setTimeout(res, 500));
+            await waitForSeedingDelay(500, win);
             win.webContents.sendInputEvent({ type: 'keyDown', keyCode: 'Enter' });
             win.webContents.sendInputEvent({ type: 'keyUp', keyCode: 'Enter' });
 
@@ -3080,11 +3395,12 @@ async function executeTaskForAccount(
       if (config.likeEnabled) {
         await tapLiveContinuously(win, acc, liveDurationSeconds, onLog, 'main');
       } else {
-        await new Promise(res => setTimeout(res, liveDurationSeconds * 1000));
+        await waitForSeedingDelay(liveDurationSeconds * 1000, win);
       }
     }
 
-    await new Promise(res => setTimeout(res, SEEDING_POST_ACTION_STABILIZE_MS));
+    await waitForSeedingDelay(SEEDING_POST_ACTION_STABILIZE_MS, win);
+    throwIfSeedingCancelled(win);
     await persistTikTokSessionCookies(
       acc.id,
       acc.username,
@@ -3095,6 +3411,7 @@ async function executeTaskForAccount(
     );
   } finally {
     if (!win.isDestroyed()) {
+      closedByAutomation = true;
       win.close();
     }
   }

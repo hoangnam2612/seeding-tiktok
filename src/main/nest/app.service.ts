@@ -2,6 +2,7 @@ import { Injectable } from '@nestjs/common';
 import * as os from 'os';
 import * as fs from 'fs';
 import * as path from 'path';
+import { ensurePersistentDataDir } from '../data-dir';
 
 export interface AppSettings {
   omocaptchaApiKey?: string;
@@ -9,13 +10,12 @@ export interface AppSettings {
 
 @Injectable()
 export class AppService {
-  private dataDir = path.join(process.cwd(), 'data');
+  private dataDir = ensurePersistentDataDir();
   private settingsFilePath = path.join(this.dataDir, 'settings.json');
 
   private ensureDataDir() {
-    if (!fs.existsSync(this.dataDir)) {
-      fs.mkdirSync(this.dataDir, { recursive: true });
-    }
+    this.dataDir = ensurePersistentDataDir();
+    this.settingsFilePath = path.join(this.dataDir, 'settings.json');
   }
 
   getSettings(): AppSettings {

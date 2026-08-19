@@ -10,13 +10,15 @@ declare global {
         username: string,
         cookie?: string,
         proxy?: string,
+        proxyType?: string,
         password?: string,
         email?: string,
         passMail?: string,
-        twoFactor?: string
+        twoFactor?: string,
+        muteBrowserAudio?: boolean
       ) => Promise<any>;
 
-      openMultiAccountChromes: (accountIds: string[], maxThreads: number, accountsData: any[]) => Promise<any>;
+      openMultiAccountChromes: (accountIds: string[], maxThreads: number, accountsData: any[], muteBrowserAudio?: boolean) => Promise<any>;
       closeAllBrowserWindows: () => Promise<any>;
       executeSeedingTask: (config: any, accounts: any[]) => Promise<any>;
       platform: string;
@@ -99,6 +101,7 @@ export default function App() {
 
   // Multi-Thread Execution State
   const [maxThreads, setMaxThreads] = useState<number>(10);
+  const [muteLoginBrowserAudio, setMuteLoginBrowserAudio] = useState<boolean>(true);
 
   // Modals State
   const [isSingleAddOpen, setIsSingleAddOpen] = useState<boolean>(false);
@@ -577,10 +580,12 @@ export default function App() {
         acc.username,
         acc.cookie,
         acc.proxy,
+        acc.proxyType,
         acc.password,
         acc.email,
         acc.passMail,
-        acc.twoFactor
+        acc.twoFactor,
+        muteLoginBrowserAudio
       );
     } else {
       alert('Chức năng mở Chrome yêu cầu ứng dụng Electron Desktop');
@@ -599,7 +604,7 @@ export default function App() {
     if (window.electronAPI?.openMultiAccountChromes) {
       const selectedAccObjects = accounts.filter(a => selectedAccountIds.includes(a.id));
       const threadCount = maxThreads === 0 ? selectedAccountIds.length : maxThreads;
-      await window.electronAPI.openMultiAccountChromes(selectedAccountIds, threadCount, selectedAccObjects);
+      await window.electronAPI.openMultiAccountChromes(selectedAccountIds, threadCount, selectedAccObjects, muteLoginBrowserAudio);
     } else {
       alert('Chức năng mở Chrome Đa Luồng yêu cầu ứng dụng Electron Desktop');
     }
@@ -678,10 +683,10 @@ export default function App() {
         </div>
       </header>
 
-      {/* Main Container */}
-      <main className="main-container">
-        {/* Navigation Tab Bar */}
-        <nav className="tab-bar">
+      <div className="app-shell">
+        <aside className="app-sidebar">
+          <div className="sidebar-section-label">Điều hướng</div>
+          <nav className="tab-bar">
           <button
             className={`tab-btn ${activeTab === 'accounts' ? 'active' : ''}`}
             onClick={() => setActiveTab('accounts')}
@@ -707,6 +712,10 @@ export default function App() {
             <span>📊</span> Live Console Logs ({logs.length})
           </button>
         </nav>
+        </aside>
+
+      {/* Main Container */}
+      <main className="main-container">
 
         {/* TAB 1: ACCOUNTS MULTI-THREAD MANAGEMENT */}
         {activeTab === 'accounts' && (
@@ -799,6 +808,15 @@ export default function App() {
                     <option value={12}>12 Luồng</option>
                     <option value={0}>Tất cả</option>
                   </select>
+                  <label className="checkbox-label" style={{ fontSize: '0.78rem', fontWeight: 700 }}>
+                    <input
+                      type="checkbox"
+                      className="checkbox-custom"
+                      checked={muteLoginBrowserAudio}
+                      onChange={e => setMuteLoginBrowserAudio(e.target.checked)}
+                    />
+                    Tắt tiếng
+                  </label>
 
                   <button className="btn-secondary" onClick={handleBulkCheckLive}>
                     🔍 Check Live
@@ -1307,25 +1325,31 @@ export default function App() {
                   }
                   setIsTaskExecuting(true);
                   setActiveTab('logs');
-                  if (window.electronAPI?.executeSeedingTask) {
-                    const selectedAccs = accounts.filter(a => selectedAccountIds.includes(a.id));
-                    const seedingThreadCount = seedingThreads === 0 ? selectedAccountIds.length : seedingThreads;
-                    await window.electronAPI.executeSeedingTask(
-                      {
-                        targetUrl,
-                        targetType,
-                        accountIds: selectedAccountIds,
-                        likeEnabled,
-                        comments: commentsInput.split('\n').filter(c => c.trim().length > 0),
-                        delaySeconds,
-                        maxThreads: seedingThreadCount,
-                        liveDurationSeconds,
-                        muteBrowserAudio,
-                      },
-                      selectedAccs
-                    );
+                  try {
+                    if (window.electronAPI?.executeSeedingTask) {
+                      const selectedAccs = accounts.filter(a => selectedAccountIds.includes(a.id));
+                      const seedingThreadCount = seedingThreads === 0 ? selectedAccountIds.length : seedingThreads;
+                      await window.electronAPI.executeSeedingTask(
+                        {
+                          targetUrl,
+                          targetType,
+                          accountIds: selectedAccountIds,
+                          likeEnabled,
+                          comments: commentsInput.split('\n').filter(c => c.trim().length > 0),
+                          delaySeconds,
+                          maxThreads: seedingThreadCount,
+                          liveDurationSeconds,
+                          muteBrowserAudio,
+                        },
+                        selectedAccs
+                      );
+                    }
+                  } catch (err) {
+                    console.error('Seeding task failed:', err);
+                    alert('Tác vụ Seeding đã dừng hoặc gặp lỗi. Vui lòng kiểm tra nhật ký để biết chi tiết.');
+                  } finally {
+                    setIsTaskExecuting(false);
                   }
-                  setIsTaskExecuting(false);
                 }}
               >
                 {isTaskExecuting ? '⏳ Đang khởi chạy Seeding...' : '🚀 Bắt đầu Seeding ngay (' + selectedAccountIds.length + ' Acc)'}
@@ -1364,6 +1388,7 @@ export default function App() {
           </div>
         )}
       </main>
+      </div>
 
       {/* MODAL 1: BATCH IMPORT ACCOUNTS */}
       {isBatchImportOpen && (

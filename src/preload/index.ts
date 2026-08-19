@@ -8,14 +8,16 @@ contextBridge.exposeInMainWorld('electronAPI', {
     username: string,
     cookie?: string,
     proxy?: string,
+    proxyType?: string,
     password?: string,
     email?: string,
     passMail?: string,
-    twoFactor?: string
-  ) => ipcRenderer.invoke('open-account-login-window', accountId, username, cookie, proxy, password, email, passMail, twoFactor),
+    twoFactor?: string,
+    muteBrowserAudio?: boolean
+  ) => ipcRenderer.invoke('open-account-login-window', accountId, username, cookie, proxy, proxyType, password, email, passMail, twoFactor, muteBrowserAudio),
 
-  openMultiAccountChromes: (accountIds: string[], maxThreads: number, accountsData: any[]) =>
-    ipcRenderer.invoke('open-multi-account-chromes', accountIds, maxThreads, accountsData),
+  openMultiAccountChromes: (accountIds: string[], maxThreads: number, accountsData: any[], muteBrowserAudio?: boolean) =>
+    ipcRenderer.invoke('open-multi-account-chromes', accountIds, maxThreads, accountsData, muteBrowserAudio),
   closeAllBrowserWindows: () => ipcRenderer.invoke('close-all-browser-windows'),
   executeSeedingTask: (config: any, accounts: any[]) =>
     ipcRenderer.invoke('execute-seeding-task', config, accounts),

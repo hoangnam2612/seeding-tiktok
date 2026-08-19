@@ -3,6 +3,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { TikTokAccount, AccountCategory, ProxyEntry } from './account.interface';
 import https from 'https';
+import { ensurePersistentDataDir } from '../../data-dir';
 
 @Injectable()
 export class AccountsService implements OnModuleInit {
@@ -16,10 +17,7 @@ export class AccountsService implements OnModuleInit {
   private proxies: ProxyEntry[] = [];
 
   onModuleInit() {
-    this.dataDir = path.join(process.cwd(), 'data');
-    if (!fs.existsSync(this.dataDir)) {
-      fs.mkdirSync(this.dataDir, { recursive: true });
-    }
+    this.dataDir = ensurePersistentDataDir();
     this.accountsFilePath = path.join(this.dataDir, 'accounts.json');
     this.categoriesFilePath = path.join(this.dataDir, 'categories.json');
     this.proxiesFilePath = path.join(this.dataDir, 'proxies.json');
