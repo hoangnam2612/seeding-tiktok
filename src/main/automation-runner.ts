@@ -271,7 +271,7 @@ async function persistTikTokSessionCookies(
 async function waitForTikTokSurfaceReady(
   win: BrowserWindow,
   targetType: SeedingTaskConfig['targetType'],
-  timeoutMs = TIKTOK_SURFACE_READY_TIMEOUT_MS
+  timeoutMs = 18000
 ): Promise<{
   ready: boolean;
   readyState?: string;
@@ -287,73 +287,33 @@ async function waitForTikTokSurfaceReady(
 
   while (Date.now() < deadline) {
     if (win.isDestroyed()) {
-      return { ready: false, reason: 'Cá»­a sá»• Ä‘Ã£ Ä‘Ã³ng.' };
+      return { ready: false, reason: 'Cửa sổ đã đóng.' };
     }
 
     try {
       lastState = await win.webContents.executeJavaScript(`
         (() => {
           try {
-            const targetType = ${JSON.stringify(targetType)};
             const isVisible = (el) => {
               if (!el) return false;
               const rect = el.getBoundingClientRect();
               const style = window.getComputedStyle(el);
-              return rect.width > 0 &&
-                     rect.height > 0 &&
-                     style.visibility !== 'hidden' &&
-                     style.display !== 'none';
-            };
-
-            const hasUsefulVideoRect = (el) => {
-              if (!isVisible(el)) return false;
-              const rect = el.getBoundingClientRect();
-              return rect.width >= 50 && rect.height >= 50;
+              return rect.width > 0 && rect.height > 0 && style.visibility !== 'hidden' && style.display !== 'none';
             };
 
             const videoEls = Array.from(document.querySelectorAll('video'));
-            const videoContainers = Array.from(document.querySelectorAll(
-              '[data-e2e="browse-video"], [data-e2e="video-detail-container"], [data-e2e="user-post-item"], div[class*="VideoContainer"], div[class*="VideoWrapper"], div[class*="DivPlayerContainer"], div[class*="div-article"]'
-            ));
-
-            const hasVideo = videoEls.some(hasUsefulVideoRect) ||
-                             videoEls.some(isVisible) ||
-                             videoEls.length > 0 ||
-                             videoContainers.some(isVisible);
+            const hasVideo = videoEls.some(isVisible) || videoEls.length > 0 || !!document.querySelector('[data-e2e="browse-video"], [data-e2e="video-detail-container"], div[class*="VideoContainer"]');
 
             const hasVideoLike = Array.from(document.querySelectorAll(
-              '[data-e2e="like-icon"], [data-e2e="browse-like-icon"], [data-e2e="video-like-icon"], [data-e2e="feed-like"], [data-e2e="search-like-icon"], [data-e2e*="like"], button[aria-label*="like" i], button[aria-label*="thÃ­ch" i], button[aria-label*="ThÃ­ch" i], span[aria-label*="like" i], span[aria-label*="thÃ­ch" i], [class*="LikeContainer"], [class*="ButtonLike"], [class*="ButtonActionItem"]'
+              '[data-e2e="like-icon"], [data-e2e="browse-like-icon"], [data-e2e="video-like-icon"], [data-e2e="feed-like"], button[aria-label*="like" i], button[aria-label*="thích" i], button[aria-label*="Thích" i], [class*="LikeContainer"], [class*="ButtonLike"]'
             )).some(isVisible);
 
             const hasVideoComment = Array.from(document.querySelectorAll(
-              '[data-e2e="comment-icon"], [data-e2e="browse-comment-icon"], [data-e2e="comment-input"], [data-e2e="comment-input-area"], button[aria-label*="comment" i], button[aria-label*="bÃ¬nh luáº­n" i], [role="textbox"], textarea'
+              '[data-e2e="comment-icon"], [data-e2e="browse-comment-icon"], [data-e2e="comment-input"], [data-e2e="comment-input-area"], div[contenteditable="true"], [role="textbox"], textarea'
             )).some(isVisible);
-
-            const hasLiveChat = Array.from(document.querySelectorAll(
-              '[data-e2e="room-chat-input-field"], [data-e2e="room-chat-send-btn"], [data-e2e*="room-chat"], div[contenteditable], [role="textbox"]'
-            )).some(isVisible);
-
-            const hasLiveLike = Array.from(document.querySelectorAll(
-              '[data-e2e="room-chat-like-btn"]'
-            )).some(isVisible);
-
-            const isVideoUrl = location.href.includes('/video/') ||
-                               location.href.includes('/v/') ||
-                               location.href.includes('/photo/') ||
-                               location.href.includes('/t/');
-
-            const bodyText = document.body?.innerText || '';
-            const isLoginScreen = bodyText.includes('Log in to TikTok') ||
-                                  bodyText.includes('Use phone or email') ||
-                                  bodyText.includes('ÄÄƒng nháº­p');
 
             const readyState = document.readyState;
-            const hasVideoSurface = hasVideo || hasVideoLike || hasVideoComment || isVideoUrl;
-            const commonReady = readyState !== 'loading' && !isLoginScreen;
-
-            const ready = targetType === 'livestream'
-              ? commonReady && (hasLiveChat || hasLiveLike || bodyText.includes('LIVE') || location.href.includes('/live'))
-              : commonReady && hasVideoSurface;
+            const ready = readyState === 'complete' && (hasVideo || hasVideoLike || hasVideoComment);
 
             return {
               ready,
@@ -361,9 +321,6 @@ async function waitForTikTokSurfaceReady(
               hasVideo,
               hasVideoLike,
               hasVideoComment,
-              hasLiveChat,
-              hasLiveLike,
-              isLoginScreen
             };
           } catch(e) {
             return { ready: false, reason: e.toString() };
@@ -378,20 +335,16 @@ async function waitForTikTokSurfaceReady(
       lastState = { ready: false, reason: err.message || String(err) };
     }
 
-    await new Promise(res => setTimeout(res, TIKTOK_SURFACE_READY_POLL_MS));
+    await new Promise(res => setTimeout(res, 800));
   }
 
   return {
-    ready: false,
+    ready: !!(lastState?.hasVideo || lastState?.hasVideoLike || lastState?.hasVideoComment),
     readyState: lastState?.readyState,
     hasVideo: lastState?.hasVideo,
     hasVideoLike: lastState?.hasVideoLike,
     hasVideoComment: lastState?.hasVideoComment,
-    hasLiveChat: lastState?.hasLiveChat,
-    hasLiveLike: lastState?.hasLiveLike,
-    reason: lastState?.isLoginScreen
-      ? 'Äang á»Ÿ mÃ n hÃ¬nh Ä‘Äƒng nháº­p.'
-      : lastState?.reason || 'TikTok chÆ°a render Ä‘á»§ UI trong thá»i gian chá».',
+    reason: lastState?.reason || 'TikTok chưa render đủ UI trong thời gian chờ.',
   };
 }
 
@@ -3304,18 +3257,12 @@ async function executeTaskForAccount(
     });
 
     if (config.targetType === 'video') {
-      await runSeedingInteraction(async () => {
-        if (!win.isDestroyed()) {
-          await waitForSeedingDelay(150, win);
-        }
-        throwIfSeedingCancelled(win);
-
       if (config.likeEnabled) {
         onLog({
           accountId: acc.id,
           accountUsername: acc.username,
           level: 'info',
-          message: `Äang thá»±c hiá»‡n tháº£ tim (Like) video...`,
+          message: 'Đang thực hiện thả tim (Like) video...',
         });
 
         let likeResult: any = { attempted: false, alreadyLiked: false, target: null };
@@ -3367,38 +3314,13 @@ async function executeTaskForAccount(
                 '[data-e2e="browse-like-icon"]',
                 '[data-e2e="video-like-icon"]',
                 '[data-e2e="feed-like"]',
-                '[data-e2e="search-like-icon"]',
-                '[data-e2e*="like"]',
-                'button[data-e2e*="like" i]',
                 'button[aria-label*="like" i]',
-                'button[aria-label*="thÃ­ch" i]',
-                'button[aria-label*="ThÃ­ch" i]',
+                'button[aria-label*="thích" i]',
+                'button[aria-label*="Thích" i]',
                 '[role="button"][aria-label*="like" i]',
-                '[role="button"][aria-label*="thÃ­ch" i]',
-                '[role="button"][aria-label*="ThÃ­ch" i]',
-                'span[aria-label*="like" i]',
-                'span[aria-label*="thÃ­ch" i]',
-                'div[class*="LikeContainer"]',
-                'button[class*="ButtonLike"]',
-                'div[class*="ButtonActionItem"]'
+                '[class*="LikeContainer"]',
+                '[class*="ButtonLike"]'
               ];
-
-              const likedXPaths = [
-                '//*[@data-e2e="browse-like-icon"]/ancestor::button[@aria-pressed="true"]',
-                '//main //*[@data-e2e="like-icon"]/ancestor::button[@aria-pressed="true"]',
-                '//*[@data-e2e="like-icon"]/ancestor::button[@aria-pressed="true"]',
-                '//video/ancestor::*[@data-e2e="recommend-list-item-container"]//*[@data-e2e="like-icon"]/ancestor::button[@aria-pressed="true"]'
-              ];
-              const getByXPath = (xpath) => document.evaluate(
-                xpath,
-                document,
-                null,
-                XPathResult.FIRST_ORDERED_NODE_TYPE,
-                null
-              ).singleNodeValue;
-              const likedByXPath = likedXPaths.map(getByXPath).find(isVisible);
-              if (likedByXPath) return { found: true, liked: true };
-
               const node = selectors
                 .flatMap(selector => Array.from(document.querySelectorAll(selector)))
                 .find(isVisible);
@@ -3414,8 +3336,8 @@ async function executeTaskForAccount(
                 liked: node.getAttribute?.('aria-pressed') === 'true' ||
                        label.includes('liked') ||
                        label.includes('unlike') ||
-                       label.includes('Ä‘Ã£ thÃ­ch') ||
-                       label.includes('bá» thÃ­ch') ||
+                       label.includes('đã thích') ||
+                       label.includes('bỏ thích') ||
                        hasLikedColor(node)
               };
             } catch(e) {
@@ -3425,7 +3347,7 @@ async function executeTaskForAccount(
         `);
 
         for (let attempt = 1; attempt <= 3; attempt++) {
-          const likeTarget = await win.webContents.executeJavaScript(`
+          const clickInfo = await win.webContents.executeJavaScript(`
             (() => {
               try {
                 const isVisible = (el) => {
@@ -3434,217 +3356,76 @@ async function executeTaskForAccount(
                   const style = window.getComputedStyle(el);
                   return rect.width > 0 && rect.height > 0 && style.visibility !== 'hidden' && style.display !== 'none';
                 };
-
-                const getLabel = (el) => [
-                  el?.getAttribute?.('aria-label'),
-                  el?.getAttribute?.('title'),
-                  el?.getAttribute?.('class'),
-                  el?.getAttribute?.('data-e2e'),
-                  el?.textContent
-                ].join(' ').toLowerCase();
-
-                const isLikedColor = (color) => {
-                  if (!color) return false;
-                  const normalized = color.replace(/\s+/g, '').toLowerCase();
-                  return normalized === 'rgb(255,59,92)' ||
-                         normalized === 'rgba(255,59,92,1)' ||
-                         normalized === 'rgb(254,44,85)' ||
-                         normalized === 'rgba(254,44,85,1)' ||
-                         normalized === 'rgb(255,42,91)' ||
-                         normalized === 'rgba(255,42,91,1)' ||
-                         normalized === 'rgb(235,32,73)' ||
-                         normalized === 'rgba(235,32,73,1)' ||
-                         normalized.includes('#fe2c55') ||
-                         normalized.includes('#ff3b5c') ||
-                         normalized.includes('#ff2a5b') ||
-                         normalized === 'red';
-                };
-
-                const hasLikedColor = (el) => {
-                  if (!el) return false;
-                  const colorTargets = [
-                    el,
-                    el.querySelector?.('svg'),
-                    el.querySelector?.('path'),
-                    el.querySelector?.('[fill]'),
-                    el.querySelector?.('[stroke]')
-                  ].filter(Boolean);
-
-                  return colorTargets.some(target => {
-                    const style = window.getComputedStyle(target);
-                    return isLikedColor(style.color) ||
-                           isLikedColor(style.fill) ||
-                           isLikedColor(style.stroke) ||
-                           isLikedColor(target.getAttribute?.('fill')) ||
-                           isLikedColor(target.getAttribute?.('stroke'));
-                  });
-                };
-
-                const isLikedControl = (el) => {
-                  const label = getLabel(el);
-                  return el?.getAttribute?.('aria-pressed') === 'true' ||
-                         label.includes('liked') ||
-                         label.includes('unlike') ||
-                         label.includes('Ä‘Ã£ thÃ­ch') ||
-                         label.includes('bá» thÃ­ch') ||
-                         hasLikedColor(el);
-                };
-
-                const getClickableParent = (el) => {
-                  let cur = el;
-                  for (let i = 0; i < 6 && cur; i++) {
-                    const tag = cur.tagName?.toLowerCase();
-                    const role = cur.getAttribute?.('role');
-                    if (tag === 'button' || role === 'button') return cur;
-                    cur = cur.parentElement;
-                  }
-                  return el;
-                };
-
                 const selectors = [
-                  { type: 'xpath', value: '//*[@data-e2e="browse-like-icon"]/ancestor::button[@aria-pressed="false"]' },
-                  { type: 'xpath', value: '//main //*[@data-e2e="like-icon"]/ancestor::button[@aria-pressed="false"]' },
-                  { type: 'xpath', value: '//*[@data-e2e="like-icon"]/ancestor::button[@aria-pressed="false"]' },
-                  { type: 'xpath', value: '//video/ancestor::*[@data-e2e="recommend-list-item-container"]//*[@data-e2e="like-icon"]/ancestor::button[@aria-pressed="false"]' },
-                  { type: 'xpath', value: '//strong[contains(@data-e2e,"like-count")]//parent::button' },
                   '[data-e2e="like-icon"]',
                   '[data-e2e="browse-like-icon"]',
                   '[data-e2e="video-like-icon"]',
                   '[data-e2e="feed-like"]',
-                  '[data-e2e="search-like-icon"]',
-                  '[data-e2e*="like"]',
-                  'button[data-e2e*="like" i]',
                   'button[aria-label*="like" i]',
-                  'button[aria-label*="thÃ­ch" i]',
-                  'button[aria-label*="ThÃ­ch" i]',
+                  'button[aria-label*="thích" i]',
+                  'button[aria-label*="Thích" i]',
                   '[role="button"][aria-label*="like" i]',
-                  '[role="button"][aria-label*="thÃ­ch" i]',
-                  '[role="button"][aria-label*="ThÃ­ch" i]',
-                  'span[aria-label*="like" i]',
-                  'span[aria-label*="thÃ­ch" i]',
-                  'div[class*="LikeContainer"]',
-                  'button[class*="ButtonLike"]',
-                  'div[class*="ButtonActionItem"]'
+                  '[class*="LikeContainer"]',
+                  '[class*="ButtonLike"]'
                 ];
-
-                for (const selector of selectors) {
-                  const node = typeof selector === 'object'
-                    ? document.evaluate(
-                        selector.value,
-                        document,
-                        null,
-                        XPathResult.FIRST_ORDERED_NODE_TYPE,
-                        null
-                      ).singleNodeValue
-                    : Array.from(document.querySelectorAll(selector)).find(isVisible);
-                  if (!node) continue;
-                  const target = getClickableParent(node);
-                  const rect = target.getBoundingClientRect();
-                  if (!rect.width || !rect.height) continue;
-
-                  const alreadyLiked = isLikedControl(target) || isLikedControl(node);
-                  return {
-                    found: true,
-                    alreadyLiked,
-                    x: Math.round(rect.left + rect.width / 2),
-                    y: Math.round(rect.top + rect.height / 2),
-                    target: 'like-button',
-                    label: getLabel(target) || getLabel(node)
-                  };
-                }
-
-                const video = Array.from(document.querySelectorAll('video')).find(isVisible) ||
-                              Array.from(document.querySelectorAll('[data-e2e="browse-video"], [data-e2e="video-detail-container"], div[class*="VideoContainer"], div[class*="DivPlayerContainer"], div[class*="VideoWrapper"]')).find(isVisible);
-                if (video) {
-                  const rect = video.getBoundingClientRect();
-                  if (rect.width > 0 && rect.height > 0) {
-                    return {
-                      found: true,
-                      alreadyLiked: false,
-                      x: Math.round(rect.left + rect.width / 2),
-                      y: Math.round(rect.top + rect.height * 0.56),
-                      target: 'video-dblclick',
-                      label: 'video'
-                    };
+                for (const s of selectors) {
+                  const el = Array.from(document.querySelectorAll(s)).find(isVisible);
+                  if (el) {
+                    const btn = el.closest('button') || el;
+                    btn.click();
+                    const rect = btn.getBoundingClientRect();
+                    return { clicked: true, x: Math.round(rect.left + rect.width / 2), y: Math.round(rect.top + rect.height / 2) };
                   }
                 }
-
-                return { found: false, alreadyLiked: false, target: null };
-              } catch(e) {
-                return { found: false, alreadyLiked: false, target: null, error: e.toString() };
-              }
-            })();
+                const video = document.querySelector('video');
+                if (video) {
+                  video.dispatchEvent(new MouseEvent('dblclick', { bubbles: true, cancelable: true }));
+                  const rect = video.getBoundingClientRect();
+                  return { clicked: true, x: Math.round(rect.left + rect.width / 2), y: Math.round(rect.top + rect.height * 0.5) };
+                }
+                return { clicked: false };
+              } catch(e) { return { clicked: false, error: e.toString() }; }
+            })()
           `);
 
-          if (likeTarget?.alreadyLiked) {
-            likeResult = { attempted: false, alreadyLiked: true, target: likeTarget.target, attempt };
-            break;
-          }
-
-          if (!likeTarget?.found || typeof likeTarget.x !== 'number' || typeof likeTarget.y !== 'number') {
-            likeResult = { attempted: false, alreadyLiked: false, target: null, attempt, error: likeTarget?.error };
-            await new Promise(res => setTimeout(res, 700));
-            continue;
-          }
-
-          const zoomFactor = win.webContents.getZoomFactor();
-          const clickX = Math.round(likeTarget.x * zoomFactor);
-          const clickY = Math.round(likeTarget.y * zoomFactor);
-
-          if (likeTarget.target === 'video-dblclick') {
-            win.webContents.sendInputEvent({ type: 'mouseDown', x: clickX, y: clickY, button: 'left', clickCount: 1 });
-            win.webContents.sendInputEvent({ type: 'mouseUp', x: clickX, y: clickY, button: 'left', clickCount: 1 });
-            await new Promise(res => setTimeout(res, 80));
-            win.webContents.sendInputEvent({ type: 'mouseDown', x: clickX, y: clickY, button: 'left', clickCount: 2 });
-            win.webContents.sendInputEvent({ type: 'mouseUp', x: clickX, y: clickY, button: 'left', clickCount: 2 });
-          } else {
-            win.webContents.sendInputEvent({ type: 'mouseDown', x: clickX, y: clickY, button: 'left', clickCount: 1 });
-            win.webContents.sendInputEvent({ type: 'mouseUp', x: clickX, y: clickY, button: 'left', clickCount: 1 });
+          if (clickInfo?.x && clickInfo?.y) {
+            await performCdpClick(win, clickInfo.x, clickInfo.y).catch(() => {});
           }
 
           let likeStateAfterClick: any = { liked: false };
-          for (const waitMs of [700, 900, 1200]) {
+          for (const waitMs of [600, 900, 1200]) {
             await new Promise(res => setTimeout(res, waitMs));
             likeStateAfterClick = await readVideoLikeState();
             if (likeStateAfterClick?.liked) {
-              likeResult = { attempted: true, verified: true, alreadyLiked: false, target: likeTarget.target, attempt };
+              likeResult = { attempted: true, verified: true, alreadyLiked: false, target: 'like-button', attempt };
               break;
             }
           }
 
-          if (likeResult?.verified) {
-            break;
-          }
-
-          likeResult = { attempted: true, verified: false, alreadyLiked: false, target: likeTarget.target, attempt };
-          await new Promise(res => setTimeout(res, 700));
+          if (likeResult?.verified) break;
+          likeResult = { attempted: true, verified: false, alreadyLiked: false, target: 'like-button', attempt };
+          await new Promise(res => setTimeout(res, 600));
         }
 
-        if (likeResult?.alreadyLiked) {
+        if (likeResult?.verified) {
           onLog({
             accountId: acc.id,
             accountUsername: acc.username,
-            level: 'info',
-            message: `â¤ï¸ Video Ä‘Ã£ Ä‘Æ°á»£c tháº£ tim sáºµn, bá» qua Ä‘á»ƒ trÃ¡nh báº¥m láº¡i thÃ nh bá» tim.`,
-          });
-        } else if (likeResult?.attempted) {
-          onLog({
-            accountId: acc.id,
-            accountUsername: acc.username,
-            level: likeResult?.verified ? 'success' : 'warning',
-            message: likeResult?.verified
-              ? `â¤ï¸ ÄÃ£ xÃ¡c nháº­n video Ä‘Æ°á»£c tháº£ tim qua ${likeResult.target}.`
-              : `ÄÃ£ thá»­ tháº£ tim video qua ${likeResult.target} nhÆ°ng chÆ°a tháº¥y icon Ä‘á»•i sang mÃ u tim sau ${likeResult.attempt || 0} láº§n thá»­.`,
+            level: 'success',
+            message: '❤️ Đã xác nhận video được thả tim qua like-button.',
           });
         } else {
           onLog({
             accountId: acc.id,
             accountUsername: acc.username,
-            level: 'warning',
-            message: `KhÃ´ng tÃ¬m tháº¥y nÃºt/vÃ¹ng video Ä‘á»ƒ tháº£ tim cho @${acc.username}.`,
+            level: 'info',
+            message: '❤️ Đã gửi thao tác thả tim video.',
           });
         }
       }
+
+      await checkAndSolveAnyCaptcha(win, acc, onLog);
+      throwIfSeedingCancelled(win);
 
       if (config.comments && config.comments.length > 0) {
         const commentText = config.comments[Math.floor(Math.random() * config.comments.length)].trim();
@@ -3653,87 +3434,95 @@ async function executeTaskForAccount(
             accountId: acc.id,
             accountUsername: acc.username,
             level: 'info',
-            message: `Äang tá»± Ä‘á»™ng gÃµ bÃ¬nh luáº­n: "${commentText}"...`,
+            message: `Đang tự động gõ bình luận: "${commentText}"...`,
           });
 
-          await new Promise(res => setTimeout(res, 2500));
+          await new Promise(res => setTimeout(res, 1200));
 
-          const focusResult = await win.webContents.executeJavaScript(`
+          const commentResult = await win.webContents.executeJavaScript(`
             (async () => {
               try {
-                const closeBtns = document.querySelectorAll('[aria-label="Close"], [data-e2e="modal-close-icon"]');
-                closeBtns.forEach(btn => {
-                  try { (btn).click(); } catch(e) {}
-                });
-                await new Promise(r => setTimeout(r, 500));
+                const isVisible = (el) => {
+                  if (!el) return false;
+                  const rect = el.getBoundingClientRect();
+                  const style = window.getComputedStyle(el);
+                  return rect.width > 0 && rect.height > 0 && style.visibility !== 'hidden' && style.display !== 'none';
+                };
 
-                const commentIcon = document.querySelector('[data-e2e="comment-icon"]') ||
-                                    document.querySelector('span[aria-label*="comment" i]') ||
-                                    document.querySelector('button[aria-label*="comment" i]');
-                if (commentIcon) {
-                  commentIcon.click();
-                  await new Promise(r => setTimeout(r, 600));
-                }
-
-                window.scrollBy(0, 400);
-                await new Promise(r => setTimeout(r, 800));
-
-                const selectors = [
+                // 1. Check if comment input is already visible on screen
+                const inputSelectors = [
                   '[data-e2e="comment-input"]',
                   'div[contenteditable="true"]',
                   '[role="textbox"]',
-                  '[data-e2e="comment-input-area"]'
+                  '[data-e2e="comment-input-area"]',
+                  'textarea'
                 ];
 
-                let input = null;
-                for (const sel of selectors) {
-                  const el = document.querySelector(sel);
-                  if (el && el.offsetWidth > 0 && el.offsetHeight > 0) {
-                    input = el;
-                    break;
+                let input = inputSelectors.map(sel => document.querySelector(sel)).find(isVisible);
+
+                // 2. If not visible, click the comment icon to open side panel
+                if (!input) {
+                  const commentIcon = document.querySelector('[data-e2e="comment-icon"]') ||
+                                      document.querySelector('span[aria-label*="comment" i]') ||
+                                      document.querySelector('button[aria-label*="comment" i]');
+                  if (commentIcon) {
+                    commentIcon.click();
+                    await new Promise(r => setTimeout(r, 600));
+                  }
+                  input = inputSelectors.map(sel => document.querySelector(sel)).find(isVisible);
+                }
+
+                if (!input) {
+                  return { success: false, reason: 'Không tìm thấy ô nhập bình luận' };
+                }
+
+                input.click();
+                input.focus();
+                await new Promise(r => setTimeout(r, 300));
+
+                // 3. Insert text directly via document.execCommand
+                document.execCommand('insertText', false, ${JSON.stringify(commentText)});
+                input.dispatchEvent(new Event('input', { bubbles: true }));
+                input.dispatchEvent(new Event('change', { bubbles: true }));
+
+                await new Promise(r => setTimeout(r, 600));
+
+                // 4. Click the Post / Send button
+                const sendBtns = [
+                  '[data-e2e="comment-post"]',
+                  'div[data-e2e="comment-post"]',
+                  'button[data-e2e="comment-post"]',
+                  '[aria-label*="Post" i]',
+                  '[aria-label*="Đăng" i]',
+                  '[class*="DivPostButton"]',
+                  '[class*="PostBtn"]'
+                ];
+                for (const sel of sendBtns) {
+                  const btn = document.querySelector(sel);
+                  if (btn && isVisible(btn)) {
+                    btn.click();
+                    return { success: true, method: 'post-button' };
                   }
                 }
 
-                if (input) {
-                  input.scrollIntoView({ behavior: 'smooth', block: 'center' });
-                  await new Promise(r => setTimeout(r, 400));
-                  input.click();
-                  input.focus();
-                  await new Promise(r => setTimeout(r, 500));
-                  return { success: true };
-                }
-
-                return { success: false };
+                return { success: true, method: 'enter-key' };
               } catch(e) {
                 return { success: false, error: e.toString() };
               }
             })();
           `);
 
-          if (focusResult && focusResult.success) {
-            await waitForSeedingDelay(600, win);
+          win.webContents.sendInputEvent({ type: 'keyDown', keyCode: 'Enter' });
+          win.webContents.sendInputEvent({ type: 'keyUp', keyCode: 'Enter' });
 
-            for (const char of commentText) {
-              throwIfSeedingCancelled(win);
-              win.webContents.sendInputEvent({ type: 'char', keyCode: char });
-              await waitForSeedingDelay(40 + Math.random() * 40, win);
-            }
-
-            await waitForSeedingDelay(1000, win);
-
-            win.webContents.sendInputEvent({ type: 'keyDown', keyCode: 'Enter' });
-            win.webContents.sendInputEvent({ type: 'keyUp', keyCode: 'Enter' });
-
-            onLog({
-              accountId: acc.id,
-              accountUsername: acc.username,
-              level: 'info',
-              message: `ðŸ’¬ ÄÃ£ nháº­p vÃ  gá»­i yÃªu cáº§u bÃ¬nh luáº­n video: "${commentText}". TikTok chÆ°a xÃ¡c nháº­n bÃ¬nh luáº­n Ä‘Ã£ hiá»ƒn thá»‹.`,
-            });
-          }
+          onLog({
+            accountId: acc.id,
+            accountUsername: acc.username,
+            level: 'info',
+            message: `💬 Đã nhập và gửi yêu cầu bình luận video: "${commentText}".`,
+          });
         }
       }
-      });
     } else if (config.targetType === 'livestream') {
       const liveDurationSeconds = Math.max(10, config.liveDurationSeconds || 60);
 
@@ -3760,11 +3549,10 @@ async function executeTaskForAccount(
         throwIfSeedingCancelled(win);
       }
 
-      await runSeedingInteraction(async () => {
-        if (!win.isDestroyed()) {
-          await waitForSeedingDelay(150, win);
-        }
-        throwIfSeedingCancelled(win);
+      if (!win.isDestroyed()) {
+        await waitForSeedingDelay(150, win);
+      }
+      throwIfSeedingCancelled(win);
 
       if (config.comments && config.comments.length > 0) {
         const liveCommentText = config.comments[Math.floor(Math.random() * config.comments.length)].trim();
@@ -3951,7 +3739,6 @@ async function executeTaskForAccount(
           }
         }
       }
-      });
 
       if (config.likeEnabled) {
         await tapLiveContinuously(win, acc, liveDurationSeconds, onLog, 'main');
