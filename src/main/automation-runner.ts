@@ -3302,7 +3302,6 @@ async function executeTaskForAccount(
           message: 'Đang thực hiện thả tim (Like) video...',
         });
 
-        let likeResult: any = { attempted: false, alreadyLiked: false, target: null };
         const readVideoLikeState = async () => win.webContents.executeJavaScript(`
           (() => {
             try {
@@ -3383,81 +3382,80 @@ async function executeTaskForAccount(
           })();
         `);
 
-        for (let attempt = 1; attempt <= 3; attempt++) {
-          const clickInfo = await win.webContents.executeJavaScript(`
-            (() => {
-              try {
-                const isVisible = (el) => {
-                  if (!el) return false;
-                  const rect = el.getBoundingClientRect();
-                  const style = window.getComputedStyle(el);
-                  return rect.width > 0 && rect.height > 0 && style.visibility !== 'hidden' && style.display !== 'none';
-                };
-                const selectors = [
-                  '[data-e2e="like-icon"]',
-                  '[data-e2e="browse-like-icon"]',
-                  '[data-e2e="video-like-icon"]',
-                  '[data-e2e="feed-like"]',
-                  'button[aria-label*="like" i]',
-                  'button[aria-label*="thích" i]',
-                  'button[aria-label*="Thích" i]',
-                  '[role="button"][aria-label*="like" i]',
-                  '[class*="LikeContainer"]',
-                  '[class*="ButtonLike"]'
-                ];
-                for (const s of selectors) {
-                  const el = Array.from(document.querySelectorAll(s)).find(isVisible);
-                  if (el) {
-                    const btn = el.closest('button') || el;
-                    btn.click();
-                    const rect = btn.getBoundingClientRect();
-                    return { clicked: true, x: Math.round(rect.left + rect.width / 2), y: Math.round(rect.top + rect.height / 2) };
-                  }
-                }
-                const video = document.querySelector('video');
-                if (video) {
-                  video.dispatchEvent(new MouseEvent('dblclick', { bubbles: true, cancelable: true }));
-                  const rect = video.getBoundingClientRect();
-                  return { clicked: true, x: Math.round(rect.left + rect.width / 2), y: Math.round(rect.top + rect.height * 0.5) };
-                }
-                return { clicked: false };
-              } catch(e) { return { clicked: false, error: e.toString() }; }
-            })()
-          `);
-
-          if (clickInfo?.x && clickInfo?.y) {
-            await performCdpClick(win, clickInfo.x, clickInfo.y).catch(() => {});
-          }
-
-          let likeStateAfterClick: any = { liked: false };
-          for (const waitMs of [600, 900, 1200]) {
-            await new Promise(res => setTimeout(res, waitMs));
-            likeStateAfterClick = await readVideoLikeState();
-            if (likeStateAfterClick?.liked) {
-              likeResult = { attempted: true, verified: true, alreadyLiked: false, target: 'like-button', attempt };
-              break;
-            }
-          }
-
-          if (likeResult?.verified) break;
-          likeResult = { attempted: true, verified: false, alreadyLiked: false, target: 'like-button', attempt };
-          await new Promise(res => setTimeout(res, 600));
-        }
-
-        if (likeResult?.verified) {
-          onLog({
-            accountId: acc.id,
-            accountUsername: acc.username,
-            level: 'success',
-            message: '❤️ Đã xác nhận video được thả tim qua like-button.',
-          });
-        } else {
+        // Check if already liked first
+        const initialState = await readVideoLikeState();
+        if (initialState?.liked) {
           onLog({
             accountId: acc.id,
             accountUsername: acc.username,
             level: 'info',
-            message: '❤️ Đã gửi thao tác thả tim video.',
+            message: '❤️ Video đã được thả tim sẵn, bỏ qua bấm lại.',
           });
+        } else {
+          let likedSuccess = false;
+          for (let attempt = 1; attempt <= 2; attempt++) {
+            const singleClickResult = await win.webContents.executeJavaScript(`
+              (() => {
+                try {
+                  const isVisible = (el) => {
+                    if (!el) return false;
+                    const rect = el.getBoundingClientRect();
+                    const style = window.getComputedStyle(el);
+                    return rect.width > 0 && rect.height > 0 && style.visibility !== 'hidden' && style.display !== 'none';
+                  };
+                  const selectors = [
+                    '[data-e2e="like-icon"]',
+                    '[data-e2e="browse-like-icon"]',
+                    '[data-e2e="video-like-icon"]',
+                    '[data-e2e="feed-like"]',
+                    'button[aria-label*="like" i]',
+                    'button[aria-label*="thích" i]',
+                    'button[aria-label*="Thích" i]',
+                    '[role="button"][aria-label*="like" i]',
+                    '[class*="LikeContainer"]',
+                    '[class*="ButtonLike"]'
+                  ];
+                  for (const s of selectors) {
+                    const el = Array.from(document.querySelectorAll(s)).find(isVisible);
+                    if (el) {
+                      const btn = el.closest('button') || el;
+                      btn.click();
+                      return { clicked: true, target: 'like-button' };
+                    }
+                  }
+                  const video = document.querySelector('video');
+                  if (video) {
+                    video.dispatchEvent(new MouseEvent('dblclick', { bubbles: true, cancelable: true }));
+                    return { clicked: true, target: 'video-dblclick' };
+                  }
+                  return { clicked: false };
+                } catch(e) { return { clicked: false, error: e.toString() }; }
+              })()
+            `);
+
+            await waitForSeedingDelay(1000, win);
+            const stateAfter = await readVideoLikeState();
+            if (stateAfter?.liked) {
+              likedSuccess = true;
+              break;
+            }
+          }
+
+          if (likedSuccess) {
+            onLog({
+              accountId: acc.id,
+              accountUsername: acc.username,
+              level: 'success',
+              message: '❤️ Đã xác nhận video được thả tim thành công.',
+            });
+          } else {
+            onLog({
+              accountId: acc.id,
+              accountUsername: acc.username,
+              level: 'info',
+              message: '❤️ Đã gửi thao tác thả tim video.',
+            });
+          }
         }
       }
 
@@ -3474,7 +3472,7 @@ async function executeTaskForAccount(
             message: `Đang tự động gõ bình luận: "${commentText}"...`,
           });
 
-          await waitForSeedingDelay(1000, win);
+          await waitForSeedingDelay(1200, win);
 
           const commentResult = await win.webContents.executeJavaScript(`
             (async () => {
@@ -3486,7 +3484,6 @@ async function executeTaskForAccount(
                   return rect.width > 0 && rect.height > 0 && style.visibility !== 'hidden' && style.display !== 'none';
                 };
 
-                // 1. Check for comment input selectors
                 const inputSelectors = [
                   '[data-e2e="comment-input"]',
                   'div[contenteditable="true"]',
@@ -3497,12 +3494,10 @@ async function executeTaskForAccount(
                   'div[class*="BottomCommentContainer"]',
                   'div[class*="DivCommentInput"]',
                   'div[class*="InputArea"]',
-                  'textarea',
-                  'input[placeholder*="comment" i]',
-                  'input[placeholder*="bình luận" i]'
+                  'textarea'
                 ];
 
-                // Scroll right column container to bottom to reveal comment box if needed
+                // Scroll right sidebar to reveal comment box
                 const commentContainers = document.querySelectorAll(
                   '[data-e2e="video-detail-container"], div[class*="CommentContainer"], div[class*="DivCommentListContainer"], div[class*="DivRightContainer"], div[class*="DivContentContainer"]'
                 );
@@ -3511,8 +3506,6 @@ async function executeTaskForAccount(
                 });
 
                 let input = inputSelectors.map(sel => document.querySelector(sel)).find(isVisible);
-
-                // If not found directly, find any element with placeholder / aria-label matching comment
                 if (!input) {
                   const allTextBoxes = Array.from(document.querySelectorAll('div, p, span, textarea, input')).filter(el => {
                     if (!isVisible(el)) return false;
@@ -3533,18 +3526,37 @@ async function executeTaskForAccount(
                 input.focus();
                 await new Promise(r => setTimeout(r, 200));
 
-                // Find editable child if input was a container wrapper
-                const editableInput = input.getAttribute('contenteditable') ? input :
+                const editable = input.getAttribute('contenteditable') ? input :
                   (input.querySelector('[contenteditable], [role="textbox"], textarea, input') || input);
 
-                editableInput.focus();
+                editable.focus();
+
+                // Select existing text if any and insert new comment
+                try {
+                  const selection = window.getSelection();
+                  const range = document.createRange();
+                  range.selectNodeContents(editable);
+                  selection.removeAllRanges();
+                  selection.addRange(range);
+                } catch(e) {}
+
                 document.execCommand('insertText', false, ${JSON.stringify(commentText)});
-                editableInput.dispatchEvent(new Event('input', { bubbles: true }));
-                editableInput.dispatchEvent(new Event('change', { bubbles: true }));
+                editable.dispatchEvent(new Event('input', { bubbles: true, cancelable: true }));
+                editable.dispatchEvent(new Event('change', { bubbles: true, cancelable: true }));
 
-                await new Promise(r => setTimeout(r, 500));
+                // Synthetic InputEvent for React/DraftJS
+                try {
+                  editable.dispatchEvent(new InputEvent('input', {
+                    bubbles: true,
+                    cancelable: true,
+                    inputType: 'insertText',
+                    data: ${JSON.stringify(commentText)}
+                  }));
+                } catch(e) {}
 
-                // Click Post / Send button
+                await new Promise(r => setTimeout(r, 600));
+
+                // Find Post button
                 const sendBtns = [
                   '[data-e2e="comment-post"]',
                   'div[data-e2e="comment-post"]',
@@ -3556,33 +3568,33 @@ async function executeTaskForAccount(
                   '[class*="ButtonPost"]'
                 ];
 
+                let posted = false;
                 for (const sel of sendBtns) {
                   const btn = document.querySelector(sel);
                   if (btn && isVisible(btn)) {
                     btn.click();
-                    const rect = btn.getBoundingClientRect();
-                    return {
-                      success: true,
-                      method: 'post-button',
-                      postX: Math.round(rect.left + rect.width / 2),
-                      postY: Math.round(rect.top + rect.height / 2)
-                    };
+                    posted = true;
+                    break;
                   }
                 }
 
-                return { success: true, method: 'enter-key' };
+                if (!posted) {
+                  // Fallback: Dispatch Enter key event on input
+                  editable.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', keyCode: 13, which: 13, bubbles: true }));
+                  editable.dispatchEvent(new KeyboardEvent('keypress', { key: 'Enter', keyCode: 13, which: 13, bubbles: true }));
+                  editable.dispatchEvent(new KeyboardEvent('keyup', { key: 'Enter', keyCode: 13, which: 13, bubbles: true }));
+                }
+
+                return { success: true };
               } catch(e) {
                 return { success: false, error: e.toString() };
               }
             })();
           `);
 
-          if (commentResult?.postX && commentResult?.postY) {
-            await performCdpClick(win, commentResult.postX, commentResult.postY).catch(() => {});
-          } else if (commentResult?.success) {
-            win.webContents.sendInputEvent({ type: 'keyDown', keyCode: 'Enter' });
-            win.webContents.sendInputEvent({ type: 'keyUp', keyCode: 'Enter' });
-          }
+          // Send Enter key via Electron input event as safety confirmation
+          win.webContents.sendInputEvent({ type: 'keyDown', keyCode: 'Enter' });
+          win.webContents.sendInputEvent({ type: 'keyUp', keyCode: 'Enter' });
 
           onLog({
             accountId: acc.id,
