@@ -21,5 +21,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
   closeAllBrowserWindows: () => ipcRenderer.invoke('close-all-browser-windows'),
   executeSeedingTask: (config: any, accounts: any[]) =>
     ipcRenderer.invoke('execute-seeding-task', config, accounts),
+  onSeedingStateChanged: (callback: (state: any) => void) => {
+    const listener = (_event: Electron.IpcRendererEvent, state: any) => callback(state);
+    ipcRenderer.on('seeding-state-changed', listener);
+    return () => ipcRenderer.removeListener('seeding-state-changed', listener);
+  },
   platform: process.platform,
 });

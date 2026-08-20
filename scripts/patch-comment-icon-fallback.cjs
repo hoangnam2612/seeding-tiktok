@@ -42,8 +42,38 @@ const newVideoCommentBlock = `if (config.comments && config.comments.length > 0)
                   'textarea'
                 ];
 
-                let input = inputSelectors.map(sel => document.querySelector(sel)).find(isVisible);
+                const findInput = () => inputSelectors.map(sel => document.querySelector(sel)).find(isVisible);
+                const getRightPane = () => Array.from(document.querySelectorAll(
+                  '[data-e2e="video-detail-container"], div[class*="DivRightContainer"], div[class*="DivContentContainer"], div[class*="CommentContainer"]'
+                )).filter(isVisible).find(el => {
+                  const rect = el.getBoundingClientRect();
+                  return rect.width >= 180 && rect.left > window.innerWidth * 0.45;
+                });
+                const clickCommentsTab = () => {
+                  const pane = getRightPane();
+                  if (!pane) return false;
+                  const tab = Array.from(pane.querySelectorAll('button, [role="tab"], [role="button"], div, span, p'))
+                    .filter(isVisible)
+                    .find(el => {
+                      const rect = el.getBoundingClientRect();
+                      const text = (el.innerText || el.textContent || el.getAttribute('aria-label') || '').trim().toLowerCase();
+                      return rect.width <= 180 && rect.height <= 70 && (
+                        text === 'comments' || text === 'comment' || text === 'bình luận' || text === 'binh luan'
+                      );
+                    });
+                  if (!tab) return false;
+                  (tab.closest('button') || tab.closest('[role="tab"]') || tab.closest('[role="button"]') || tab).click();
+                  return true;
+                };
+
+                let input = findInput();
                 if (input) return { inputAlreadyVisible: true };
+
+                if (getRightPane() && clickCommentsTab()) {
+                  await new Promise(r => setTimeout(r, 700));
+                  input = findInput();
+                  if (input) return { inputAlreadyVisible: true, selectedCommentsTab: true };
+                }
 
                 // If input is not visible, find the comment icon on the video action bar
                 const iconSelectors = [
@@ -86,12 +116,10 @@ const newVideoCommentBlock = `if (config.comments && config.comments.length > 0)
 
                 if (iconEl) {
                   iconEl.click();
-                  const rect = iconEl.getBoundingClientRect();
                   return {
                     inputAlreadyVisible: false,
                     openedIcon: true,
-                    clickX: Math.round(rect.left + rect.width / 2),
-                    clickY: Math.round(rect.top + rect.height / 2)
+                    domClicked: true
                   };
                 }
 
@@ -103,9 +131,6 @@ const newVideoCommentBlock = `if (config.comments && config.comments.length > 0)
           \`);
 
           if (!commentOpenResult?.inputAlreadyVisible && commentOpenResult?.openedIcon) {
-            if (commentOpenResult.clickX && commentOpenResult.clickY) {
-              await performCdpClick(win, commentOpenResult.clickX, commentOpenResult.clickY).catch(() => {});
-            }
             await waitForSeedingDelay(1500, win);
           }
 

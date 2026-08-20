@@ -21,6 +21,7 @@ declare global {
       openMultiAccountChromes: (accountIds: string[], maxThreads: number, accountsData: any[], muteBrowserAudio?: boolean) => Promise<any>;
       closeAllBrowserWindows: () => Promise<any>;
       executeSeedingTask: (config: any, accounts: any[]) => Promise<any>;
+      onSeedingStateChanged?: (callback: (state: { isRunning: boolean; canceled?: boolean; reason?: string }) => void) => () => void;
       platform: string;
     };
   }
@@ -177,6 +178,15 @@ export default function App() {
 
   // Logs State
   const [logs, setLogs] = useState<TaskLogItem[]>([]);
+
+  useEffect(() => {
+    const unsubscribe = window.electronAPI?.onSeedingStateChanged?.((state) => {
+      setIsTaskExecuting(!!state.isRunning);
+    });
+    return () => {
+      unsubscribe?.();
+    };
+  }, []);
 
   // --- FETCH DATA ---
   const fetchNestStatus = async () => {
@@ -617,6 +627,7 @@ export default function App() {
     }
 
     const result = await window.electronAPI.closeAllBrowserWindows();
+    setIsTaskExecuting(false);
     alert(`Đã đóng ${result?.closedCount || 0} trình duyệt.`);
   };
 

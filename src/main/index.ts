@@ -31,7 +31,12 @@ async function bootstrapNest() {
   setupAutomationIPC(
     (log) => automationService.addLog(log),
     (id, status) => accountsService.updateAccountStatus(id, status),
-    (id, update) => accountsService.updateAccount(id, update)
+    (id, update) => accountsService.updateAccount(id, update),
+    (state) => {
+      if (!mainWindow?.isDestroyed()) {
+        mainWindow?.webContents.send('seeding-state-changed', state);
+      }
+    }
   );
 }
 

@@ -249,14 +249,12 @@ const cleanTargetTypeBlock = `    if (config.targetType === 'video') {
           const focusResult = await win.webContents.executeJavaScript(\`
             (async () => {
               try {
-                const commentIcon = document.querySelector('[data-e2e="comment-icon"]') ||
-                                    document.querySelector('span[aria-label*="comment" i]') ||
-                                    document.querySelector('button[aria-label*="comment" i]');
-                if (commentIcon) {
-                  commentIcon.click();
-                  await new Promise(r => setTimeout(r, 400));
-                }
-
+                const isVisible = (el) => {
+                  if (!el) return false;
+                  const rect = el.getBoundingClientRect();
+                  const style = window.getComputedStyle(el);
+                  return rect.width > 0 && rect.height > 0 && style.visibility !== 'hidden' && style.display !== 'none';
+                };
                 const selectors = [
                   '[data-e2e="comment-input"]',
                   'div[contenteditable="true"]',
@@ -264,15 +262,39 @@ const cleanTargetTypeBlock = `    if (config.targetType === 'video') {
                   '[data-e2e="comment-input-area"]',
                   'textarea'
                 ];
-
-                let input = null;
-                for (const sel of selectors) {
-                  const el = document.querySelector(sel);
-                  if (el && el.offsetWidth > 0 && el.offsetHeight > 0) {
-                    input = el;
-                    break;
+                const findInput = () => selectors.map(sel => document.querySelector(sel)).find(el => el && el.offsetWidth > 0 && el.offsetHeight > 0);
+                const rightPane = Array.from(document.querySelectorAll(
+                  '[data-e2e="video-detail-container"], div[class*="DivRightContainer"], div[class*="DivContentContainer"], div[class*="CommentContainer"]'
+                )).filter(isVisible).find(el => {
+                  const rect = el.getBoundingClientRect();
+                  return rect.width >= 180 && rect.left > window.innerWidth * 0.45;
+                });
+                let input = findInput();
+                if (!input && rightPane) {
+                  const tab = Array.from(rightPane.querySelectorAll('button, [role="tab"], [role="button"], div, span, p'))
+                    .filter(isVisible)
+                    .find(el => {
+                      const text = (el.innerText || el.textContent || el.getAttribute('aria-label') || '').trim().toLowerCase();
+                      const rect = el.getBoundingClientRect();
+                      return rect.width <= 180 && rect.height <= 70 && (
+                        text === 'comments' || text === 'comment' || text === 'bình luận' || text === 'binh luan'
+                      );
+                    });
+                  if (tab) {
+                    (tab.closest('button') || tab.closest('[role="tab"]') || tab.closest('[role="button"]') || tab).click();
+                    await new Promise(r => setTimeout(r, 500));
+                    input = findInput();
                   }
                 }
+                const commentIcon = document.querySelector('[data-e2e="comment-icon"]') ||
+                                    document.querySelector('span[aria-label*="comment" i]') ||
+                                    document.querySelector('button[aria-label*="comment" i]');
+                if (!input && !rightPane && commentIcon) {
+                  commentIcon.click();
+                  await new Promise(r => setTimeout(r, 400));
+                }
+
+                input = input || findInput();
 
                 if (input) {
                   input.scrollIntoView({ behavior: 'smooth', block: 'center' });

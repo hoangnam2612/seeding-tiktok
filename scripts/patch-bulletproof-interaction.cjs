@@ -303,10 +303,35 @@ if (startIdx !== -1 && endIdx !== -1) {
                   'textarea'
                 ];
 
-                let input = inputSelectors.map(sel => document.querySelector(sel)).find(isVisible);
+                const findInput = () => inputSelectors.map(sel => document.querySelector(sel)).find(isVisible);
+                const rightPane = Array.from(document.querySelectorAll(
+                  '[data-e2e="video-detail-container"], div[class*="DivRightContainer"], div[class*="DivContentContainer"], div[class*="CommentContainer"]'
+                )).filter(isVisible).find(el => {
+                  const rect = el.getBoundingClientRect();
+                  return rect.width >= 180 && rect.left > window.innerWidth * 0.45;
+                });
+
+                let input = findInput();
+
+                if (!input && rightPane) {
+                  const tab = Array.from(rightPane.querySelectorAll('button, [role="tab"], [role="button"], div, span, p'))
+                    .filter(isVisible)
+                    .find(el => {
+                      const rect = el.getBoundingClientRect();
+                      const text = (el.innerText || el.textContent || el.getAttribute('aria-label') || '').trim().toLowerCase();
+                      return rect.width <= 180 && rect.height <= 70 && (
+                        text === 'comments' || text === 'comment' || text === 'bình luận' || text === 'binh luan'
+                      );
+                    });
+                  if (tab) {
+                    (tab.closest('button') || tab.closest('[role="tab"]') || tab.closest('[role="button"]') || tab).click();
+                    await new Promise(r => setTimeout(r, 600));
+                    input = findInput();
+                  }
+                }
 
                 // 2. If not visible, click the comment icon to open side panel
-                if (!input) {
+                if (!input && !rightPane) {
                   const commentIcon = document.querySelector('[data-e2e="comment-icon"]') ||
                                       document.querySelector('span[aria-label*="comment" i]') ||
                                       document.querySelector('button[aria-label*="comment" i]');
@@ -314,7 +339,7 @@ if (startIdx !== -1 && endIdx !== -1) {
                     commentIcon.click();
                     await new Promise(r => setTimeout(r, 600));
                   }
-                  input = inputSelectors.map(sel => document.querySelector(sel)).find(isVisible);
+                  input = findInput();
                 }
 
                 if (!input) {
