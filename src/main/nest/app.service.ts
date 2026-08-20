@@ -3,6 +3,7 @@ import * as os from 'os';
 import * as fs from 'fs';
 import * as path from 'path';
 import { ensurePersistentDataDir } from '../data-dir';
+import { decryptSecret, encryptSecret, hasEncryptedSecret } from '../secret-json';
 
 export interface AppSettings {
   omocaptchaApiKey?: string;
@@ -22,7 +23,19 @@ export class AppService {
     try {
       this.ensureDataDir();
       if (!fs.existsSync(this.settingsFilePath)) return {};
-      return JSON.parse(fs.readFileSync(this.settingsFilePath, 'utf-8'));
+      const settings = JSON.parse(fs.readFileSync(this.settingsFilePath, 'utf-8'));
+      const decryptedSettings = {
+        ...settings,
+        omocaptchaApiKey: decryptSecret(settings.omocaptchaApiKey),
+      };
+      if (decryptedSettings.omocaptchaApiKey && !hasEncryptedSecret(settings.omocaptchaApiKey)) {
+        fs.writeFileSync(
+          this.settingsFilePath,
+          JSON.stringify({ ...settings, omocaptchaApiKey: encryptSecret(decryptedSettings.omocaptchaApiKey) }, null, 2),
+          'utf-8'
+        );
+      }
+      return decryptedSettings;
     } catch (err) {
       console.error('[AppService] Failed to read settings:', err);
       return {};
@@ -36,7 +49,11 @@ export class AppService {
       ...current,
       omocaptchaApiKey: settings.omocaptchaApiKey?.trim() || '',
     };
-    fs.writeFileSync(this.settingsFilePath, JSON.stringify(next, null, 2), 'utf-8');
+    const storageSettings: AppSettings = {
+      ...next,
+      omocaptchaApiKey: encryptSecret(next.omocaptchaApiKey),
+    };
+    fs.writeFileSync(this.settingsFilePath, JSON.stringify(storageSettings, null, 2), 'utf-8');
     return next;
   }
 

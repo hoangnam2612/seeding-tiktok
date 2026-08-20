@@ -1,10 +1,11 @@
 const { app, BrowserWindow, session } = require('electron');
 const path = require('path');
+const os = require('os');
 
-const appUserData = process.env.APPDATA
-  ? path.join(process.env.APPDATA, 'electron-nest-react')
-  : undefined;
-if (appUserData) app.setPath('userData', appUserData);
+const appUserData = process.env.E2E_USER_DATA_DIR || path.join(os.tmpdir(), 'seeding-tiktok-e2e');
+app.setPath('userData', appUserData);
+app.on('window-all-closed', () => {});
+const shouldRunRealTikTokProbe = process.env.E2E_REAL_TIKTOK === '1' || process.argv.includes('--real-tiktok');
 
 const targetUrl = process.env.E2E_TIKTOK_URL || 'https://www.tiktok.com/@misspiggsy/video/7658119499597532430?is_from_webapp=1&sender_device=pc';
 
@@ -132,6 +133,10 @@ async function runLocalActionFixture() {
 }
 
 async function runSixWindowRenderProbe() {
+  if (!shouldRunRealTikTokProbe) {
+    return { skipped: true, reason: 'Set E2E_REAL_TIKTOK=1 or pass --real-tiktok to run the real TikTok/account render probe' };
+  }
+
   let accounts = [];
   try {
     accounts = require(path.join(process.cwd(), 'data', 'accounts.json'));
@@ -182,7 +187,7 @@ async function runSixWindowRenderProbe() {
   return { skipped: false, results };
 }
 
-app.whenReady().then(async () => {
+async function runE2E() {
   try {
     await runLocalActionFixture();
     const render = await runSixWindowRenderProbe();
@@ -197,4 +202,10 @@ app.whenReady().then(async () => {
     console.error(error);
     app.exit(1);
   }
-});
+}
+
+module.exports = { runE2E };
+
+if (process.env.E2E_IMPORT_ONLY !== '1') {
+  app.whenReady().then(runE2E);
+}

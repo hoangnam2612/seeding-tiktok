@@ -1,6 +1,8 @@
 import 'reflect-metadata';
 import { app, BrowserWindow, ipcMain } from 'electron';
 import * as path from 'path';
+import { Request, Response, NextFunction } from 'express';
+import { API_AUTH_HEADER, getApiAuthToken, isValidApiAuthToken } from './api-auth';
 
 // Disable Chromium WebAuthn / Passkey OS popups
 app.commandLine.appendSwitch('disable-features', 'WebAuthentication,WebAuthenticationConditionalUI,WebAuthenticationUI');
@@ -18,9 +20,23 @@ const NEST_PORT = 3000;
 async function bootstrapNest() {
   const nestApp = await NestFactory.create(AppModule, { logger: ['error', 'warn', 'log'] });
   nestApp.enableCors({
-    origin: '*',
+    origin: (origin, callback) => {
+      const allowedOrigins = new Set([
+        'http://localhost:5173',
+        'http://127.0.0.1:5173',
+        'file://',
+        'null',
+      ]);
+      if (!origin || allowedOrigins.has(origin)) return callback(null, true);
+      return callback(null, false);
+    },
     methods: 'GET,HEAD,PUT,PATCH,POST,DELETE,OPTIONS',
-    allowedHeaders: 'Content-Type, Accept, Authorization',
+    allowedHeaders: `Content-Type, Accept, Authorization, ${API_AUTH_HEADER}`,
+  });
+  nestApp.use((req: Request, res: Response, next: NextFunction) => {
+    if (req.method === 'OPTIONS' || !req.path.startsWith('/api')) return next();
+    if (isValidApiAuthToken(req.header(API_AUTH_HEADER))) return next();
+    return res.status(401).json({ success: false, message: 'Unauthorized local API request.' });
   });
   await nestApp.listen(NEST_PORT, '127.0.0.1');
   console.log(`[NestJS Backend] Listening on http://127.0.0.1:${NEST_PORT}`);
@@ -124,3 +140,5 @@ ipcMain.handle('get-desktop-metadata', () => {
     nodeVersion: process.versions.node,
   };
 });
+
+ipcMain.handle('get-api-auth-token', () => getApiAuthToken());

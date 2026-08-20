@@ -2,6 +2,7 @@ import { contextBridge, ipcRenderer } from 'electron';
 
 contextBridge.exposeInMainWorld('electronAPI', {
   getDesktopMetadata: () => ipcRenderer.invoke('get-desktop-metadata'),
+  getApiAuthToken: () => ipcRenderer.invoke('get-api-auth-token'),
   focusWindow: () => ipcRenderer.invoke('focus-window'),
   openAccountLoginWindow: (
     accountId: string,

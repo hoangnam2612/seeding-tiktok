@@ -4,6 +4,27 @@ import * as path from 'path';
 import { TikTokAccount, AccountCategory, ProxyEntry } from './account.interface';
 import https from 'https';
 import { ensurePersistentDataDir } from '../../data-dir';
+import { decryptSecret, encryptSecret, hasEncryptedSecret } from '../../secret-json';
+
+const ACCOUNT_SECRET_FIELDS: Array<keyof TikTokAccount> = [
+  'password',
+  'cookie',
+  'token',
+  'email',
+  'passMail',
+  'twoFactor',
+  'proxy',
+];
+const ACCOUNT_STATUSES: TikTokAccount['status'][] = [
+  'live',
+  'die',
+  'unauthenticated',
+  'authenticated',
+  'checkpoint',
+  'active',
+  'error',
+];
+const PROXY_TYPES: NonNullable<TikTokAccount['proxyType']>[] = ['none', 'http', 'socks5', 'tmproxy', 'tinsoft'];
 
 @Injectable()
 export class AccountsService implements OnModuleInit {
@@ -120,10 +141,10 @@ export class AccountsService implements OnModuleInit {
     try {
       if (fs.existsSync(this.accountsFilePath)) {
         const fileContent = fs.readFileSync(this.accountsFilePath, 'utf-8');
-        this.accounts = JSON.parse(fileContent);
+        this.accounts = JSON.parse(fileContent).map((acc: TikTokAccount) => this.decryptAccountForMemory(acc));
         let changed = false;
         this.accounts.forEach(acc => {
-          changed = this.normalizeImportedAccount(acc) || changed;
+          changed = this.hasPlainAccountSecrets(acc) || this.normalizeImportedAccount(acc) || changed;
         });
         if (changed) this.saveAccounts();
       } else {
@@ -138,7 +159,8 @@ export class AccountsService implements OnModuleInit {
 
   private saveAccounts() {
     try {
-      fs.writeFileSync(this.accountsFilePath, JSON.stringify(this.accounts, null, 2), 'utf-8');
+      const storageAccounts = this.accounts.map(acc => this.encryptAccountForStorage(acc));
+      fs.writeFileSync(this.accountsFilePath, JSON.stringify(storageAccounts, null, 2), 'utf-8');
     } catch (err) {
       console.error('[AccountsService] Failed to save accounts file:', err);
     }
@@ -148,7 +170,10 @@ export class AccountsService implements OnModuleInit {
     try {
       if (fs.existsSync(this.proxiesFilePath)) {
         const fileContent = fs.readFileSync(this.proxiesFilePath, 'utf-8');
-        this.proxies = JSON.parse(fileContent);
+        this.proxies = JSON.parse(fileContent).map((proxy: ProxyEntry) => this.decryptProxyForMemory(proxy));
+        if (this.proxies.some(proxy => proxy.value && !hasEncryptedSecret(proxy.value))) {
+          this.saveProxies();
+        }
       } else {
         this.proxies = [];
         this.saveProxies();
@@ -161,7 +186,8 @@ export class AccountsService implements OnModuleInit {
 
   private saveProxies() {
     try {
-      fs.writeFileSync(this.proxiesFilePath, JSON.stringify(this.proxies, null, 2), 'utf-8');
+      const storageProxies = this.proxies.map(proxy => this.encryptProxyForStorage(proxy));
+      fs.writeFileSync(this.proxiesFilePath, JSON.stringify(storageProxies, null, 2), 'utf-8');
     } catch (err) {
       console.error('[AccountsService] Failed to save proxies file:', err);
     }
@@ -169,6 +195,67 @@ export class AccountsService implements OnModuleInit {
 
   private isValidProxyValue(proxy?: string): boolean {
     return !!proxy && proxy.trim().includes(':');
+  }
+
+  private hasPlainAccountSecrets(acc: TikTokAccount): boolean {
+    return ACCOUNT_SECRET_FIELDS.some(field => {
+      const value = acc[field];
+      return typeof value === 'string' && value.length > 0 && !hasEncryptedSecret(value);
+    });
+  }
+
+  private decryptAccountForMemory(acc: TikTokAccount): TikTokAccount {
+    const next = { ...acc };
+    ACCOUNT_SECRET_FIELDS.forEach(field => {
+      const value = next[field];
+      if (typeof value === 'string') {
+        (next as any)[field] = decryptSecret(value);
+      }
+    });
+    return next;
+  }
+
+  private encryptAccountForStorage(acc: TikTokAccount): TikTokAccount {
+    const next = { ...acc };
+    ACCOUNT_SECRET_FIELDS.forEach(field => {
+      const value = next[field];
+      if (typeof value === 'string') {
+        (next as any)[field] = encryptSecret(value);
+      }
+    });
+    return next;
+  }
+
+  private decryptProxyForMemory(proxy: ProxyEntry): ProxyEntry {
+    return {
+      ...proxy,
+      value: decryptSecret(proxy.value),
+    };
+  }
+
+  private encryptProxyForStorage(proxy: ProxyEntry): ProxyEntry {
+    return {
+      ...proxy,
+      value: encryptSecret(proxy.value),
+    };
+  }
+
+  private sanitizeAccountDto(dto: Partial<TikTokAccount>): Partial<TikTokAccount> {
+    const clean: Partial<TikTokAccount> = {};
+    if (typeof dto.username === 'string') clean.username = dto.username.replace(/^@/, '').trim();
+    if (typeof dto.password === 'string') clean.password = dto.password;
+    if (typeof dto.displayName === 'string') clean.displayName = dto.displayName.trim();
+    if (typeof dto.notes === 'string') clean.notes = dto.notes;
+    if (typeof dto.categoryId === 'string') clean.categoryId = dto.categoryId;
+    if (typeof dto.cookie === 'string') clean.cookie = dto.cookie;
+    if (typeof dto.token === 'string') clean.token = dto.token;
+    if (typeof dto.email === 'string') clean.email = dto.email.trim();
+    if (typeof dto.passMail === 'string') clean.passMail = dto.passMail;
+    if (typeof dto.twoFactor === 'string') clean.twoFactor = dto.twoFactor.trim();
+    if (typeof dto.proxy === 'string') clean.proxy = dto.proxy.trim();
+    if (dto.proxyType && PROXY_TYPES.includes(dto.proxyType)) clean.proxyType = dto.proxyType;
+    if (dto.status && ACCOUNT_STATUSES.includes(dto.status)) clean.status = dto.status;
+    return clean;
   }
 
   getAllProxies(): ProxyEntry[] {
@@ -246,6 +333,12 @@ export class AccountsService implements OnModuleInit {
     const selectedProxies = this.proxies.filter(proxy => proxyIds.includes(proxy.id));
     if (accountIds.length === 0 || selectedProxies.length === 0) return 0;
 
+    accountIds.forEach(accountId => {
+      this.proxies.forEach(proxy => {
+        if (proxy.assignedAccountId === accountId) proxy.assignedAccountId = undefined;
+      });
+    });
+
     let updatedCount = 0;
     accountIds.forEach((accountId, idx) => {
       const acc = this.getAccountById(accountId);
@@ -297,21 +390,22 @@ export class AccountsService implements OnModuleInit {
   }
 
   addAccount(dto: Partial<TikTokAccount>): TikTokAccount {
+    const clean = this.sanitizeAccountDto(dto);
     const newAcc: TikTokAccount = {
       id: 'acc_' + Date.now() + '_' + Math.random().toString(36).substring(2, 7),
-      username: (dto.username || 'user_' + Date.now()).replace(/^@/, '').trim(),
-      password: dto.password || '',
-      displayName: dto.displayName?.trim() || dto.username?.trim() || 'TikTok User',
-      categoryId: dto.categoryId || 'cat_default',
-      notes: dto.notes || '',
-      cookie: dto.cookie || '',
-      token: dto.token || '',
-      email: dto.email || '',
-      passMail: dto.passMail || '',
-      twoFactor: dto.twoFactor || '',
-      proxy: dto.proxy || '',
-      proxyType: dto.proxyType || 'http',
-      status: dto.status || (this.isValidTikTokCookie(dto.cookie) ? 'authenticated' : 'unauthenticated'),
+      username: clean.username || 'user_' + Date.now(),
+      password: clean.password || '',
+      displayName: clean.displayName || clean.username || 'TikTok User',
+      categoryId: clean.categoryId || 'cat_default',
+      notes: clean.notes || '',
+      cookie: clean.cookie || '',
+      token: clean.token || '',
+      email: clean.email || '',
+      passMail: clean.passMail || '',
+      twoFactor: clean.twoFactor || '',
+      proxy: clean.proxy || '',
+      proxyType: clean.proxyType || 'http',
+      status: clean.status || (this.isValidTikTokCookie(clean.cookie) ? 'authenticated' : 'unauthenticated'),
       createdAt: new Date().toISOString(),
     };
     this.accounts.push(newAcc);
@@ -322,7 +416,7 @@ export class AccountsService implements OnModuleInit {
   updateAccount(id: string, dto: Partial<TikTokAccount>): TikTokAccount | undefined {
     const acc = this.getAccountById(id);
     if (acc) {
-      Object.assign(acc, dto);
+      Object.assign(acc, this.sanitizeAccountDto(dto));
       this.saveAccounts();
     }
     return acc;
@@ -344,7 +438,11 @@ export class AccountsService implements OnModuleInit {
     const initialLen = this.accounts.length;
     this.accounts = this.accounts.filter(a => a.id !== id);
     if (this.accounts.length !== initialLen) {
+      this.proxies.forEach(proxy => {
+        if (proxy.assignedAccountId === id) proxy.assignedAccountId = undefined;
+      });
       this.saveAccounts();
+      this.saveProxies();
       return true;
     }
     return false;
@@ -529,7 +627,11 @@ export class AccountsService implements OnModuleInit {
     this.accounts = this.accounts.filter(a => !ids.includes(a.id));
     const deletedCount = initialLen - this.accounts.length;
     if (deletedCount > 0) {
+      this.proxies.forEach(proxy => {
+        if (proxy.assignedAccountId && ids.includes(proxy.assignedAccountId)) proxy.assignedAccountId = undefined;
+      });
       this.saveAccounts();
+      this.saveProxies();
     }
     return deletedCount;
   }
@@ -549,11 +651,14 @@ export class AccountsService implements OnModuleInit {
   }
 
   bulkUpdateProxy(ids: string[], proxyList: string[], proxyType: TikTokAccount['proxyType'] = 'http'): number {
+    const cleanProxyList = proxyList.map(proxy => proxy.trim()).filter(proxy => this.isValidProxyValue(proxy));
+    if (ids.length === 0 || cleanProxyList.length === 0) return 0;
+
     let updatedCount = 0;
     ids.forEach((id, idx) => {
       const acc = this.getAccountById(id);
       if (acc) {
-        acc.proxy = proxyList[idx % proxyList.length] || '';
+        acc.proxy = cleanProxyList[idx % cleanProxyList.length] || '';
         acc.proxyType = proxyType;
         updatedCount++;
       }

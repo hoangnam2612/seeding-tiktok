@@ -4,6 +4,7 @@ declare global {
   interface Window {
     electronAPI?: {
       getDesktopMetadata: () => Promise<any>;
+      getApiAuthToken: () => Promise<string>;
       focusWindow: () => Promise<any>;
       openAccountLoginWindow: (
         accountId: string,
@@ -80,6 +81,20 @@ export interface TaskLogItem {
 
 export default function App() {
   const NEST_BASE_URL = 'http://127.0.0.1:3000/api';
+  let cachedApiAuthToken = '';
+
+  const getApiAuthToken = async () => {
+    if (cachedApiAuthToken) return cachedApiAuthToken;
+    cachedApiAuthToken = await window.electronAPI?.getApiAuthToken?.() || '';
+    return cachedApiAuthToken;
+  };
+
+  const apiFetch = async (input: RequestInfo | URL, init: RequestInit = {}) => {
+    const token = await getApiAuthToken();
+    const headers = new Headers(init.headers || {});
+    if (token) headers.set('X-Seeding-App-Token', token);
+    return fetch(input, { ...init, headers });
+  };
 
   // Navigation State
   const [activeTab, setActiveTab] = useState<'accounts' | 'proxies' | 'seeding' | 'logs'>('accounts');
@@ -192,7 +207,7 @@ export default function App() {
   const fetchNestStatus = async () => {
     setLoadingStatus(true);
     try {
-      const res = await fetch(`${NEST_BASE_URL}/status`);
+      const res = await apiFetch(`${NEST_BASE_URL}/status`);
       if (res.ok) setNestStatus(await res.json());
       else setNestStatus(null);
     } catch {
@@ -204,7 +219,7 @@ export default function App() {
 
   const fetchCategories = async () => {
     try {
-      const res = await fetch(`${NEST_BASE_URL}/accounts/categories`);
+      const res = await apiFetch(`${NEST_BASE_URL}/accounts/categories`);
       if (res.ok) {
         const json = await res.json();
         setCategories(json.data || []);
@@ -216,7 +231,7 @@ export default function App() {
 
   const fetchAccounts = async () => {
     try {
-      const res = await fetch(`${NEST_BASE_URL}/accounts`);
+      const res = await apiFetch(`${NEST_BASE_URL}/accounts`);
       if (res.ok) {
         const json = await res.json();
         setAccounts(json.data || []);
@@ -228,7 +243,7 @@ export default function App() {
 
   const fetchProxies = async () => {
     try {
-      const res = await fetch(`${NEST_BASE_URL}/accounts/proxies`);
+      const res = await apiFetch(`${NEST_BASE_URL}/accounts/proxies`);
       if (res.ok) {
         const json = await res.json();
         setProxies(json.data || []);
@@ -240,7 +255,7 @@ export default function App() {
 
   const fetchLogs = async () => {
     try {
-      const res = await fetch(`${NEST_BASE_URL}/automation/logs`);
+      const res = await apiFetch(`${NEST_BASE_URL}/automation/logs`);
       if (res.ok) {
         const json = await res.json();
         setLogs(json.data || []);
@@ -252,7 +267,7 @@ export default function App() {
 
   const fetchSettings = async () => {
     try {
-      const res = await fetch(`${NEST_BASE_URL}/settings`);
+      const res = await apiFetch(`${NEST_BASE_URL}/settings`);
       if (res.ok) {
         const json = await res.json();
         setOmocaptchaApiKey(json.data?.omocaptchaApiKey || '');
@@ -284,7 +299,7 @@ export default function App() {
     if (!newCategoryName.trim()) return;
 
     try {
-      const res = await fetch(`${NEST_BASE_URL}/accounts/categories`, {
+      const res = await apiFetch(`${NEST_BASE_URL}/accounts/categories`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ name: newCategoryName }),
@@ -305,7 +320,7 @@ export default function App() {
 
     try {
 
-      const res = await fetch(`${NEST_BASE_URL}/accounts`, {
+      const res = await apiFetch(`${NEST_BASE_URL}/accounts`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -343,7 +358,7 @@ export default function App() {
       return;
     }
     try {
-      const res = await fetch(`${NEST_BASE_URL}/accounts/totp`, {
+      const res = await apiFetch(`${NEST_BASE_URL}/accounts/totp`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ twoFactor: acc.twoFactor }),
@@ -368,7 +383,7 @@ export default function App() {
     }
     alert(`⏳ Đang kết nối ngầm hòm thư ${email} để bóc tách mã OTP 6 số từ TikTok (chỉ đọc mail gần đây)...`);
     try {
-      const res = await fetch(`${NEST_BASE_URL}/accounts/fetch-otp`, {
+      const res = await apiFetch(`${NEST_BASE_URL}/accounts/fetch-otp`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ email, passMail, requestedAt: Date.now() }),
@@ -389,7 +404,7 @@ export default function App() {
     if (!batchRawText.trim()) return;
 
     try {
-      const res = await fetch(`${NEST_BASE_URL}/accounts/batch-import`, {
+      const res = await apiFetch(`${NEST_BASE_URL}/accounts/batch-import`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -428,7 +443,7 @@ export default function App() {
     if (!proxyImportText.trim()) return;
 
     try {
-      const res = await fetch(`${NEST_BASE_URL}/accounts/proxies/import`, {
+      const res = await apiFetch(`${NEST_BASE_URL}/accounts/proxies/import`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ rawText: proxyImportText, proxyType: proxyImportType }),
@@ -447,7 +462,7 @@ export default function App() {
 
   const handleSaveOmocaptchaKey = async () => {
     try {
-      const res = await fetch(`${NEST_BASE_URL}/settings`, {
+      const res = await apiFetch(`${NEST_BASE_URL}/settings`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ omocaptchaApiKey }),
@@ -471,7 +486,7 @@ export default function App() {
     }
 
     try {
-      const res = await fetch(`${NEST_BASE_URL}/accounts/proxies/assign`, {
+      const res = await apiFetch(`${NEST_BASE_URL}/accounts/proxies/assign`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -497,7 +512,7 @@ export default function App() {
     if (!confirm(`Bỏ proxy khỏi ${selectedAccountIds.length} tài khoản đã chọn?`)) return;
 
     try {
-      const res = await fetch(`${NEST_BASE_URL}/accounts/proxies/clear-accounts`, {
+      const res = await apiFetch(`${NEST_BASE_URL}/accounts/proxies/clear-accounts`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ accountIds: selectedAccountIds }),
@@ -514,7 +529,7 @@ export default function App() {
   const handleDeleteProxy = async (id: string) => {
     if (!confirm('Xóa proxy này khỏi kho proxy?')) return;
     try {
-      await fetch(`${NEST_BASE_URL}/accounts/proxies/${id}`, { method: 'DELETE' });
+      await apiFetch(`${NEST_BASE_URL}/accounts/proxies/${id}`, { method: 'DELETE' });
       setSelectedProxyIds(selectedProxyIds.filter(proxyId => proxyId !== id));
       fetchAccounts();
       fetchProxies();
@@ -526,7 +541,7 @@ export default function App() {
   const handleDeleteAccount = async (id: string) => {
     if (!confirm('Bạn có chắc chắn muốn xóa tài khoản này?')) return;
     try {
-      await fetch(`${NEST_BASE_URL}/accounts/${id}`, { method: 'DELETE' });
+      await apiFetch(`${NEST_BASE_URL}/accounts/${id}`, { method: 'DELETE' });
       setSelectedAccountIds(selectedAccountIds.filter(i => i !== id));
       fetchAccounts();
     } catch (err) {
@@ -539,7 +554,7 @@ export default function App() {
     if (!confirm(`Xác nhận xóa ${selectedAccountIds.length} tài khoản đã chọn?`)) return;
 
     try {
-      await fetch(`${NEST_BASE_URL}/accounts/bulk-delete`, {
+      await apiFetch(`${NEST_BASE_URL}/accounts/bulk-delete`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ ids: selectedAccountIds }),
@@ -554,7 +569,7 @@ export default function App() {
   const handleBulkMoveCategory = async (targetCatId: string) => {
     if (selectedAccountIds.length === 0) return;
     try {
-      await fetch(`${NEST_BASE_URL}/accounts/bulk-move`, {
+      await apiFetch(`${NEST_BASE_URL}/accounts/bulk-move`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ ids: selectedAccountIds, targetCategoryId: targetCatId }),
@@ -567,7 +582,7 @@ export default function App() {
 
   const handleCheckLive = async (acc: TikTokAccount) => {
     try {
-      await fetch(`${NEST_BASE_URL}/accounts/check-live/${acc.id}`, { method: 'POST' });
+      await apiFetch(`${NEST_BASE_URL}/accounts/check-live/${acc.id}`, { method: 'POST' });
       fetchAccounts();
     } catch (err) {
       console.error(err);
