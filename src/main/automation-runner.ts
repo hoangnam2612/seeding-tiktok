@@ -3472,8 +3472,100 @@ async function executeTaskForAccount(
             message: `Đang tự động gõ bình luận: "${commentText}"...`,
           });
 
-          await waitForSeedingDelay(1200, win);
+          await waitForSeedingDelay(1000, win);
 
+          // Step 1 & 2: Detect if input is already visible, or find the comment icon to open comment drawer
+          const commentOpenResult = await win.webContents.executeJavaScript(`
+            (async () => {
+              try {
+                const isVisible = (el) => {
+                  if (!el) return false;
+                  const rect = el.getBoundingClientRect();
+                  const style = window.getComputedStyle(el);
+                  return rect.width > 0 && rect.height > 0 && style.visibility !== 'hidden' && style.display !== 'none';
+                };
+
+                const inputSelectors = [
+                  '[data-e2e="comment-input"]',
+                  'div[contenteditable="true"]',
+                  'div[contenteditable="plaintext-only"]',
+                  'div[contenteditable]',
+                  '[role="textbox"]',
+                  '[data-e2e="comment-input-area"]',
+                  'div[class*="BottomCommentContainer"]',
+                  'div[class*="DivCommentInput"]',
+                  'div[class*="InputArea"]',
+                  'textarea'
+                ];
+
+                let input = inputSelectors.map(sel => document.querySelector(sel)).find(isVisible);
+                if (input) return { inputAlreadyVisible: true };
+
+                // If input is not visible, find the comment icon on the video action bar
+                const iconSelectors = [
+                  '[data-e2e="comment-icon"]',
+                  '[data-e2e="browse-comment-icon"]',
+                  '[data-e2e="feed-comment-icon"]',
+                  '[data-e2e="video-comment-icon"]',
+                  'button[aria-label*="comment" i]',
+                  'button[aria-label*="bình luận" i]',
+                  'button[aria-label*="Bình luận" i]',
+                  'span[aria-label*="comment" i]',
+                  'span[aria-label*="bình luận" i]',
+                  '[role="button"][aria-label*="comment" i]',
+                  'strong[data-e2e*="comment-count"]',
+                  '[class*="CommentButton"]',
+                  '[class*="ButtonActionItem"]'
+                ];
+
+                let iconEl = null;
+                for (const sel of iconSelectors) {
+                  const matches = Array.from(document.querySelectorAll(sel)).filter(isVisible);
+                  if (matches.length > 0) {
+                    iconEl = matches[0].closest('button') || matches[0].closest('[role="button"]') || matches[0];
+                    break;
+                  }
+                }
+
+                // If still not found, check next sibling of the Like button
+                if (!iconEl) {
+                  const likeEl = document.querySelector('[data-e2e="like-icon"], [data-e2e="browse-like-icon"], button[aria-label*="like" i]');
+                  if (likeEl) {
+                    const likeContainer = likeEl.closest('button')?.parentElement || likeEl.parentElement;
+                    const nextContainer = likeContainer?.nextElementSibling;
+                    const btn = nextContainer?.querySelector('button, [role="button"]') || nextContainer;
+                    if (btn && isVisible(btn)) {
+                      iconEl = btn;
+                    }
+                  }
+                }
+
+                if (iconEl) {
+                  iconEl.click();
+                  const rect = iconEl.getBoundingClientRect();
+                  return {
+                    inputAlreadyVisible: false,
+                    openedIcon: true,
+                    clickX: Math.round(rect.left + rect.width / 2),
+                    clickY: Math.round(rect.top + rect.height / 2)
+                  };
+                }
+
+                return { inputAlreadyVisible: false, openedIcon: false, reason: 'Không tìm thấy ô nhập hoặc biểu tượng bình luận' };
+              } catch(e) {
+                return { inputAlreadyVisible: false, openedIcon: false, error: e.toString() };
+              }
+            })();
+          `);
+
+          if (!commentOpenResult?.inputAlreadyVisible && commentOpenResult?.openedIcon) {
+            if (commentOpenResult.clickX && commentOpenResult.clickY) {
+              await performCdpClick(win, commentOpenResult.clickX, commentOpenResult.clickY).catch(() => {});
+            }
+            await waitForSeedingDelay(1500, win);
+          }
+
+          // Step 3 & 4: Focus input, type comment, and click Post
           const commentResult = await win.webContents.executeJavaScript(`
             (async () => {
               try {
@@ -3497,7 +3589,7 @@ async function executeTaskForAccount(
                   'textarea'
                 ];
 
-                // Scroll right sidebar to reveal comment box
+                // Scroll right sidebar to bottom to reveal comment box
                 const commentContainers = document.querySelectorAll(
                   '[data-e2e="video-detail-container"], div[class*="CommentContainer"], div[class*="DivCommentListContainer"], div[class*="DivRightContainer"], div[class*="DivContentContainer"]'
                 );
@@ -3516,7 +3608,7 @@ async function executeTaskForAccount(
                 }
 
                 if (!input) {
-                  return { success: false, reason: 'Không tìm thấy ô nhập bình luận' };
+                  return { success: false, reason: 'Không tìm thấy ô nhập bình luận sau khi mở tab' };
                 }
 
                 input.scrollIntoView({ behavior: 'instant', block: 'center' });
@@ -3531,7 +3623,7 @@ async function executeTaskForAccount(
 
                 editable.focus();
 
-                // Select existing text if any and insert new comment
+                // Select existing content if any and insert text
                 try {
                   const selection = window.getSelection();
                   const range = document.createRange();
@@ -3544,7 +3636,6 @@ async function executeTaskForAccount(
                 editable.dispatchEvent(new Event('input', { bubbles: true, cancelable: true }));
                 editable.dispatchEvent(new Event('change', { bubbles: true, cancelable: true }));
 
-                // Synthetic InputEvent for React/DraftJS
                 try {
                   editable.dispatchEvent(new InputEvent('input', {
                     bubbles: true,
@@ -3556,7 +3647,7 @@ async function executeTaskForAccount(
 
                 await new Promise(r => setTimeout(r, 600));
 
-                // Find Post button
+                // Click Post button
                 const sendBtns = [
                   '[data-e2e="comment-post"]',
                   'div[data-e2e="comment-post"]',
@@ -3579,7 +3670,6 @@ async function executeTaskForAccount(
                 }
 
                 if (!posted) {
-                  // Fallback: Dispatch Enter key event on input
                   editable.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', keyCode: 13, which: 13, bubbles: true }));
                   editable.dispatchEvent(new KeyboardEvent('keypress', { key: 'Enter', keyCode: 13, which: 13, bubbles: true }));
                   editable.dispatchEvent(new KeyboardEvent('keyup', { key: 'Enter', keyCode: 13, which: 13, bubbles: true }));
@@ -3592,7 +3682,7 @@ async function executeTaskForAccount(
             })();
           `);
 
-          // Send Enter key via Electron input event as safety confirmation
+          // Send Enter key as final confirmation
           win.webContents.sendInputEvent({ type: 'keyDown', keyCode: 'Enter' });
           win.webContents.sendInputEvent({ type: 'keyUp', keyCode: 'Enter' });
 
@@ -3602,7 +3692,7 @@ async function executeTaskForAccount(
             level: commentResult?.success ? 'info' : 'warning',
             message: commentResult?.success
               ? `💬 Đã nhập và gửi yêu cầu bình luận video: "${commentText}".`
-              : `💬 Không nhập được bình luận video cho @${acc.username}: ${commentResult?.reason || commentResult?.error || 'không rõ lỗi'}.`,
+              : `💬 Không nhập được bình luận video cho @${acc.username}: ${commentResult?.reason || commentResult?.error || commentOpenResult?.reason || 'không rõ lỗi'}.`,
           });
         }
       }
