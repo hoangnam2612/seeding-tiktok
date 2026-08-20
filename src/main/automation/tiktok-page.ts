@@ -1,6 +1,7 @@
 import { BrowserWindow } from 'electron';
 import { SeedingTaskConfig, TaskLogItem } from '../nest/automation/automation.interface';
 import { ParsedProxyConfig, isTikTokCookie } from './session-profile';
+import { AccountStatus } from './types';
 
 const TIKTOK_SURFACE_READY_TIMEOUT_MS = 25000;
 const TIKTOK_PAGE_LOAD_TIMEOUT_MS = 30000;
@@ -97,9 +98,14 @@ function escapeHtml(value: string): string {
 async function showBrowserLoadProblem(
   win: BrowserWindow,
   title: string,
-  details: string[]
+  details: string[],
+  hasProxy = false
 ): Promise<void> {
   if (win.isDestroyed()) return;
+
+  const recommendation = hasProxy
+    ? 'Hãy thử proxy khác hoặc kiểm tra lại IP, port, user, pass và loại HTTP/SOCKS5.'
+    : 'Hãy kiểm tra lại kết nối mạng internet, kiểm tra DNS/tường lửa, hoặc xoá cache và session để thử lại.';
 
   const html = `
     <!doctype html>
@@ -109,7 +115,7 @@ async function showBrowserLoadProblem(
         <style>
           body {
             margin: 0;
-            font-family: Arial, sans-serif;
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
             background: #0f172a;
             color: #e5e7eb;
             display: flex;
@@ -145,7 +151,7 @@ async function showBrowserLoadProblem(
         <main>
           <h1>${escapeHtml(title)}</h1>
           ${details.map(detail => `<p>${escapeHtml(detail)}</p>`).join('')}
-          <p>Hay thu proxy khac hoac kiem tra lai IP, port, user, pass va loai HTTP/SOCKS5.</p>
+          <p>${escapeHtml(recommendation)}</p>
         </main>
       </body>
     </html>
@@ -162,10 +168,19 @@ export async function loadLoginStartPage(
   proxyStr: string | undefined,
   proxyConfig: ParsedProxyConfig | null,
   onLog: (log: Omit<TaskLogItem, 'id' | 'timestamp'>) => void,
-  onAccountStatusChange: (id: string, status: 'authenticated' | 'unauthenticated' | 'active' | 'error' | 'live' | 'die') => void,
+  onAccountStatusChange: (id: string, status: AccountStatus) => void,
   contextLabel: string
-): Promise<void> {
+): Promise<boolean> {
+  const hasProxy = Boolean(proxyStr || proxyConfig?.proxyRules);
   let loadFailed: { errorCode?: number; errorDescription?: string; validatedURL?: string } | null = null;
+
+  const isAbortedError = (code?: number, desc?: string) => {
+    if (code === -3) return true;
+    if (!desc) return false;
+    const lower = String(desc).toLowerCase();
+    return lower.includes('err_aborted') || lower.includes('-3');
+  };
+
   const onFail = (
     _event: Electron.Event,
     errorCode: number,
@@ -173,63 +188,85 @@ export async function loadLoginStartPage(
     validatedURL: string,
     isMainFrame: boolean
   ) => {
-    if (!isMainFrame || errorCode === -3) return;
+    if (!isMainFrame || isAbortedError(errorCode, errorDescription)) return;
     loadFailed = { errorCode, errorDescription, validatedURL };
   };
 
   win.webContents.on('did-fail-load', onFail);
   try {
     await win.loadURL(url).catch((err: any) => {
-      loadFailed = {
-        errorCode: err?.errno || err?.code,
-        errorDescription: err?.message || String(err),
-        validatedURL: url,
-      };
+      const code = err?.errno || err?.code;
+      const desc = err?.message || String(err);
+      if (!isAbortedError(code, desc)) {
+        loadFailed = {
+          errorCode: typeof code === 'number' ? code : undefined,
+          errorDescription: desc,
+          validatedURL: url,
+        };
+      }
     });
 
-    await new Promise(res => setTimeout(res, 6000));
-    if (win.isDestroyed()) return;
+    await new Promise(res => setTimeout(res, 5000));
+    if (win.isDestroyed()) return false;
 
     if (!loadFailed) {
       let snapshot = await getTikTokPageSnapshot(win);
       if (snapshot.isBlank) {
         await clearTikTokRenderCache(customSession);
         await win.reload();
-        await new Promise(res => setTimeout(res, 4500));
-        if (win.isDestroyed()) return;
+        await new Promise(res => setTimeout(res, 4000));
+        if (win.isDestroyed()) return false;
         snapshot = await getTikTokPageSnapshot(win);
       }
 
-      if (!snapshot.isBlank) return;
+      if (!snapshot.isBlank) return true;
 
+      const logPrefix = hasProxy ? '[Proxy]' : '[Network]';
+      const proxyInfo = hasProxy ? ` Proxy=${proxyConfig?.proxyRules || proxyStr}` : ' (Không dùng proxy)';
       onLog({
         accountId: acc.id,
         accountUsername: acc.username,
         level: 'warning',
-        message: `[Proxy] ${contextLabel} @${acc.username || acc.id} render trang trang sau khi load TikTok. Proxy=${proxyConfig?.proxyRules || proxyStr || 'none'}.`,
+        message: `${logPrefix} ${contextLabel} @${acc.username || acc.id} render trang trắng sau khi load TikTok.${proxyInfo}.`,
       });
       onAccountStatusChange(acc.id, 'error');
-      await showBrowserLoadProblem(win, 'TikTok dang bi trang', [
-        `Account: @${acc.username || acc.id}`,
-        `Proxy: ${proxyConfig?.proxyRules || proxyStr || 'none'}`,
-        'Da reload va clear cache nhung TikTok van khong render noi dung.',
-      ]);
-      return;
+      await showBrowserLoadProblem(
+        win,
+        'TikTok đang bị trắng trang',
+        [
+          `Account: @${acc.username || acc.id}`,
+          hasProxy ? `Proxy: ${proxyConfig?.proxyRules || proxyStr}` : 'Proxy: Không sử dụng',
+          'Đã reload và xoá cache nhưng TikTok vẫn không hiển thị nội dung.',
+        ],
+        hasProxy
+      );
+      return false;
     }
+
+    const logPrefix = hasProxy ? '[Proxy]' : '[Network]';
+    const failTitle = hasProxy ? 'Không load được TikTok qua proxy' : 'Không load được TikTok';
+    const logMsg = hasProxy
+      ? `${logPrefix} ${contextLabel} @${acc.username || acc.id} không load được TikTok qua proxy ${proxyConfig?.proxyRules || proxyStr}: ${loadFailed.errorDescription || loadFailed.errorCode || 'unknown error'}.`
+      : `${logPrefix} ${contextLabel} @${acc.username || acc.id} không load được TikTok: ${loadFailed.errorDescription || loadFailed.errorCode || 'unknown error'}.`;
 
     onLog({
       accountId: acc.id,
       accountUsername: acc.username,
       level: 'error',
-      message: `[Proxy] ${contextLabel} @${acc.username || acc.id} khong load duoc TikTok qua proxy ${proxyConfig?.proxyRules || proxyStr || 'none'}: ${loadFailed.errorDescription || loadFailed.errorCode || 'unknown error'}.`,
+      message: logMsg,
     });
     onAccountStatusChange(acc.id, 'error');
 
-    await showBrowserLoadProblem(win, 'Khong load duoc TikTok qua proxy', [
+    const details = [
       `Account: @${acc.username || acc.id}`,
-      `Proxy: ${proxyConfig?.proxyRules || proxyStr || 'none'}${proxyConfig?.auth ? ' (co user/pass)' : ''}`,
-      `Loi: ${loadFailed.errorDescription || loadFailed.errorCode || 'unknown error'}`,
-    ]);
+      hasProxy
+        ? `Proxy: ${proxyConfig?.proxyRules || proxyStr}${proxyConfig?.auth ? ' (có user/pass)' : ''}`
+        : 'Proxy: Không sử dụng',
+      `Lỗi: ${loadFailed.errorDescription || loadFailed.errorCode || 'unknown error'}`,
+    ];
+
+    await showBrowserLoadProblem(win, failTitle, details, hasProxy);
+    return false;
   } finally {
     win.webContents.removeListener('did-fail-load', onFail);
   }
@@ -341,6 +378,20 @@ function getCanonicalTikTokUrl(rawUrl: string): string {
   return rawUrl;
 }
 
+function getDesktopTikTokUrl(rawUrl: string): string {
+  try {
+    const parsed = new URL(getCanonicalTikTokUrl(rawUrl));
+    parsed.searchParams.set('is_from_webapp', '1');
+    parsed.searchParams.set('sender_device', 'pc');
+    return parsed.toString();
+  } catch (_) {}
+  return rawUrl;
+}
+
+function wait(ms: number): Promise<void> {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
 export async function getTikTokPageSnapshot(win: BrowserWindow): Promise<{
   isBlank: boolean;
   url?: string;
@@ -388,32 +439,37 @@ export async function loadTikTokUrlForSeeding(
   acc: { id: string; username: string },
   onLog: (log: Omit<TaskLogItem, 'id' | 'timestamp'>) => void
 ): Promise<void> {
-  let timeoutHandle: NodeJS.Timeout | undefined;
+  const loadUrlIgnoringAbort = async (nextUrl: string) => {
+    await win.loadURL(nextUrl).catch((err: any) => {
+      const errMsg = err?.message || String(err);
+      if (errMsg.includes('ERR_ABORTED') || err?.code === 'ERR_ABORTED' || err?.errno === -3) {
+        return;
+      }
+      throw err;
+    });
+  };
 
-  const loadPromise = win.loadURL(url).catch((err: any) => {
-    const errMsg = err?.message || String(err);
-    if (errMsg.includes('ERR_ABORTED') || err?.code === 'ERR_ABORTED' || err?.errno === -3) {
-      return;
+  const loadWithTimeout = async (nextUrl: string) => {
+    let timeoutHandle: NodeJS.Timeout | undefined;
+    const loadPromise = loadUrlIgnoringAbort(nextUrl);
+    const timeoutPromise = new Promise<void>((_resolve, reject) => {
+      timeoutHandle = setTimeout(() => {
+        try {
+          if (!win.isDestroyed()) win.webContents.stop();
+        } catch (_) {}
+        reject(new Error(`TikTok load qua ${Math.round(TIKTOK_PAGE_LOAD_TIMEOUT_MS / 1000)}s van chua xong.`));
+      }, TIKTOK_PAGE_LOAD_TIMEOUT_MS);
+    });
+
+    try {
+      await Promise.race([loadPromise, timeoutPromise]);
+    } finally {
+      if (timeoutHandle) clearTimeout(timeoutHandle);
     }
-    throw err;
-  });
+  };
 
-  const timeoutPromise = new Promise<void>((_resolve, reject) => {
-    timeoutHandle = setTimeout(() => {
-      try {
-        if (!win.isDestroyed()) win.webContents.stop();
-      } catch (_) {}
-      reject(new Error(`TikTok load qua ${Math.round(TIKTOK_PAGE_LOAD_TIMEOUT_MS / 1000)}s van chua xong.`));
-    }, TIKTOK_PAGE_LOAD_TIMEOUT_MS);
-  });
-
-  try {
-    await Promise.race([loadPromise, timeoutPromise]);
-  } finally {
-    if (timeoutHandle) clearTimeout(timeoutHandle);
-  }
-
-  await new Promise(res => setTimeout(res, 1500));
+  await loadWithTimeout(url);
+  await wait(1500);
   let snapshot = await getTikTokPageSnapshot(win);
   if (!snapshot.isBlank) return;
 
@@ -426,17 +482,30 @@ export async function loadTikTokUrlForSeeding(
 
   await clearTikTokRenderCache(customSession);
   const retryUrl = getCanonicalTikTokUrl(url);
-  await win.loadURL(retryUrl).catch((err: any) => {
-    const errMsg = err?.message || String(err);
-    if (!errMsg.includes('ERR_ABORTED') && err?.code !== 'ERR_ABORTED' && err?.errno !== -3) {
-      throw err;
-    }
+  await loadUrlIgnoringAbort('about:blank');
+  await wait(500);
+  await loadWithTimeout(retryUrl);
+  await wait(2500);
+
+  snapshot = await getTikTokPageSnapshot(win);
+  if (!snapshot.isBlank) return;
+
+  onLog({
+    accountId: acc.id,
+    accountUsername: acc.username,
+    level: 'warning',
+    message: `[Load] TikTok van trang/trong sau reload cho @${acc.username}. Thu hard reload qua TikTok home roi quay lai target... readyState=${snapshot.readyState || 'unknown'}, bodyHtml=${snapshot.bodyHtmlLength ?? 'unknown'}`,
   });
-  await new Promise(res => setTimeout(res, 2500));
+
+  await clearTikTokRenderCache(customSession);
+  await loadWithTimeout('https://www.tiktok.com/');
+  await wait(2500);
+  await loadWithTimeout(getDesktopTikTokUrl(url));
+  await wait(3500);
 
   snapshot = await getTikTokPageSnapshot(win);
   if (snapshot.isBlank) {
-    throw new Error(`TikTok van trang/trong sau reload cho @${acc.username}: url=${snapshot.url || 'unknown'}, readyState=${snapshot.readyState || 'unknown'}, bodyHtml=${snapshot.bodyHtmlLength ?? 'unknown'}`);
+    throw new Error(`TikTok van trang/trong sau hard reload cho @${acc.username}: url=${snapshot.url || 'unknown'}, readyState=${snapshot.readyState || 'unknown'}, bodyHtml=${snapshot.bodyHtmlLength ?? 'unknown'}`);
   }
 }
 

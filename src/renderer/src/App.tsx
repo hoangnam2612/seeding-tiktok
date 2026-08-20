@@ -1,4 +1,27 @@
-import { useEffect, useState, useRef } from 'react';
+import React, { useEffect, useState, useRef, useMemo } from 'react';
+import {
+  IconUsers,
+  IconGlobe,
+  IconRocket,
+  IconTerminal,
+  IconPlus,
+  IconUpload,
+  IconPlay,
+  IconStop,
+  IconSearch,
+  IconTrash,
+  IconFolder,
+  IconKey,
+  IconMail,
+  IconRefresh,
+  IconVolumeMute,
+  IconTiktok,
+} from './components/Icons';
+import { StatusBadge } from './components/StatusBadge';
+import { ThemeToggle } from './components/ThemeToggle';
+import { AccountCategory, TikTokAccount, ProxyEntry, TaskLogItem } from './types';
+import { apiFetch, NEST_BASE_URL } from './utils/api';
+import { computeVisibleSelection, toggleSelectAllVisible, toggleSelectId } from './utils/selection';
 
 declare global {
   interface Window {
@@ -19,81 +42,39 @@ declare global {
         muteBrowserAudio?: boolean
       ) => Promise<any>;
 
-      openMultiAccountChromes: (accountIds: string[], maxThreads: number, accountsData: any[], muteBrowserAudio?: boolean) => Promise<any>;
+      openMultiAccountChromes: (
+        accountIds: string[],
+        maxThreads: number,
+        accountsData: any[],
+        muteBrowserAudio?: boolean
+      ) => Promise<any>;
       closeAllBrowserWindows: () => Promise<any>;
       executeSeedingTask: (config: any, accounts: any[]) => Promise<any>;
-      onSeedingStateChanged?: (callback: (state: { isRunning: boolean; canceled?: boolean; reason?: string }) => void) => () => void;
+      onSeedingStateChanged?: (
+        callback: (state: { isRunning: boolean; canceled?: boolean; reason?: string }) => void
+      ) => () => void;
       platform: string;
     };
   }
 }
 
-
-export interface AccountCategory {
-  id: string;
-  name: string;
-  color?: string;
-  createdAt: string;
-}
-
-export interface TikTokAccount {
-  id: string;
-  username: string;
-  password?: string;
-  displayName: string;
-  notes?: string;
-  categoryId?: string;
-  cookie?: string;
-  token?: string;
-  email?: string;
-  passMail?: string;
-  twoFactor?: string;
-  proxy?: string;
-  proxyType?: 'none' | 'http' | 'socks5' | 'tmproxy' | 'tinsoft';
-  avatarUrl?: string;
-  followerCount?: number;
-  followingCount?: number;
-  status: 'live' | 'die' | 'unauthenticated' | 'authenticated' | 'checkpoint' | 'active' | 'error';
-  lastChecked?: string;
-  lastUsed?: string;
-  createdAt: string;
-}
-
-export interface ProxyEntry {
-  id: string;
-  value: string;
-  proxyType: 'none' | 'http' | 'socks5' | 'tmproxy' | 'tinsoft';
-  label?: string;
-  assignedAccountId?: string;
-  status?: 'untested' | 'active' | 'error';
-  lastChecked?: string;
-  createdAt: string;
-}
-
-export interface TaskLogItem {
-  id: string;
-  timestamp: string;
-  accountId?: string;
-  accountUsername?: string;
-  level: 'info' | 'success' | 'warning' | 'error';
-  message: string;
-}
-
 export default function App() {
-  const NEST_BASE_URL = 'http://127.0.0.1:3000/api';
-  let cachedApiAuthToken = '';
+  // Theme Management (Light / Dark)
+  const [theme, setTheme] = useState<'light' | 'dark'>(() => {
+    const saved = localStorage.getItem('theme');
+    if (saved === 'light' || saved === 'dark') return saved;
+    return window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches
+      ? 'dark'
+      : 'light';
+  });
 
-  const getApiAuthToken = async () => {
-    if (cachedApiAuthToken) return cachedApiAuthToken;
-    cachedApiAuthToken = await window.electronAPI?.getApiAuthToken?.() || '';
-    return cachedApiAuthToken;
-  };
+  useEffect(() => {
+    document.documentElement.setAttribute('data-theme', theme);
+    localStorage.setItem('theme', theme);
+  }, [theme]);
 
-  const apiFetch = async (input: RequestInfo | URL, init: RequestInit = {}) => {
-    const token = await getApiAuthToken();
-    const headers = new Headers(init.headers || {});
-    if (token) headers.set('X-Seeding-App-Token', token);
-    return fetch(input, { ...init, headers });
+  const toggleTheme = () => {
+    setTheme((prev) => (prev === 'dark' ? 'light' : 'dark'));
   };
 
   // Navigation State
@@ -110,7 +91,7 @@ export default function App() {
   const [selectedAccountIds, setSelectedAccountIds] = useState<string[]>([]);
   const [proxies, setProxies] = useState<ProxyEntry[]>([]);
   const [selectedProxyIds, setSelectedProxyIds] = useState<string[]>([]);
-  
+
   // Search & Filters
   const [searchQuery, setSearchQuery] = useState<string>('');
   const [statusFilter, setStatusFilter] = useState<string>('all');
@@ -163,8 +144,6 @@ export default function App() {
   const [newProxy, setNewProxy] = useState<string>('');
   const [newCategoryId, setNewCategoryId] = useState<string>('cat_default');
   const [newNotes, setNewNotes] = useState<string>('');
-
-
 
   // Batch Import Form
   const [batchRawText, setBatchRawText] = useState<string>('');
@@ -319,7 +298,6 @@ export default function App() {
     if (!newUsername.trim()) return;
 
     try {
-
       const res = await apiFetch(`${NEST_BASE_URL}/accounts`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -420,13 +398,13 @@ export default function App() {
 
         if (skippedLines && skippedLines.length > 0) {
           const displayLines = skippedLines.slice(0, 20);
-          msg += `\n\nChi tiết các dòng bị bỏ qua (hiển thị tối đa 20 dòng đầu):\n` +
+          msg +=
+            `\n\nChi tiết các dòng bị bỏ qua (hiển thị tối đa 20 dòng đầu):\n` +
             displayLines.map((s: any) => `• Dòng ${s.line}: "${s.rawText}" (${s.reason})`).join('\n');
           if (skippedLines.length > 20) {
             msg += `\n... và ${skippedLines.length - 20} dòng khác.`;
           }
         }
-
 
         alert(msg);
         setBatchRawText('');
@@ -477,7 +455,7 @@ export default function App() {
 
   const handleAssignSelectedProxies = async () => {
     if (selectedAccountIds.length === 0) {
-      alert('Vui lòng chọn tài khoản ở tab Accounts trước.');
+      alert('Vui lòng chọn tài khoản ở tab Quản lý tài khoản trước.');
       return;
     }
     if (selectedProxyIds.length === 0) {
@@ -530,7 +508,7 @@ export default function App() {
     if (!confirm('Xóa proxy này khỏi kho proxy?')) return;
     try {
       await apiFetch(`${NEST_BASE_URL}/accounts/proxies/${id}`, { method: 'DELETE' });
-      setSelectedProxyIds(selectedProxyIds.filter(proxyId => proxyId !== id));
+      setSelectedProxyIds((prev) => prev.filter((proxyId) => proxyId !== id));
       fetchAccounts();
       fetchProxies();
     } catch (err) {
@@ -542,7 +520,7 @@ export default function App() {
     if (!confirm('Bạn có chắc chắn muốn xóa tài khoản này?')) return;
     try {
       await apiFetch(`${NEST_BASE_URL}/accounts/${id}`, { method: 'DELETE' });
-      setSelectedAccountIds(selectedAccountIds.filter(i => i !== id));
+      setSelectedAccountIds((prev) => prev.filter((i) => i !== id));
       fetchAccounts();
     } catch (err) {
       alert('Lỗi xóa tài khoản');
@@ -593,7 +571,7 @@ export default function App() {
     if (selectedAccountIds.length === 0) return;
     alert(`Đang tiến hành kiểm tra Live/Die cho ${selectedAccountIds.length} tài khoản...`);
     for (const id of selectedAccountIds) {
-      const acc = accounts.find(a => a.id === id);
+      const acc = accounts.find((a) => a.id === id);
       if (acc) await handleCheckLive(acc);
     }
   };
@@ -617,9 +595,6 @@ export default function App() {
     }
   };
 
-
-
-
   const handleOpenMultiChromes = async () => {
     if (selectedAccountIds.length === 0) {
       alert('Vui lòng chọn ít nhất 1 tài khoản để mở Chrome!');
@@ -627,9 +602,14 @@ export default function App() {
     }
 
     if (window.electronAPI?.openMultiAccountChromes) {
-      const selectedAccObjects = accounts.filter(a => selectedAccountIds.includes(a.id));
+      const selectedAccObjects = accounts.filter((a) => selectedAccountIds.includes(a.id));
       const threadCount = maxThreads === 0 ? selectedAccountIds.length : maxThreads;
-      await window.electronAPI.openMultiAccountChromes(selectedAccountIds, threadCount, selectedAccObjects, muteLoginBrowserAudio);
+      await window.electronAPI.openMultiAccountChromes(
+        selectedAccountIds,
+        threadCount,
+        selectedAccObjects,
+        muteLoginBrowserAudio
+      );
     } else {
       alert('Chức năng mở Chrome Đa Luồng yêu cầu ứng dụng Electron Desktop');
     }
@@ -646,829 +626,1118 @@ export default function App() {
     alert(`Đã đóng ${result?.closedCount || 0} trình duyệt.`);
   };
 
-  const toggleSelectAccount = (id: string) => {
-    if (selectedAccountIds.includes(id)) {
-      setSelectedAccountIds(selectedAccountIds.filter(i => i !== id));
-    } else {
-      setSelectedAccountIds([...selectedAccountIds, id]);
-    }
-  };
-
-  const toggleSelectAll = (filteredAccs: TikTokAccount[]) => {
-    if (selectedAccountIds.length === filteredAccs.length) {
-      setSelectedAccountIds([]);
-    } else {
-      setSelectedAccountIds(filteredAccs.map(a => a.id));
-    }
-  };
-
-  const toggleSelectProxy = (id: string) => {
-    if (selectedProxyIds.includes(id)) {
-      setSelectedProxyIds(selectedProxyIds.filter(proxyId => proxyId !== id));
-    } else {
-      setSelectedProxyIds([...selectedProxyIds, id]);
-    }
-  };
-
-  const toggleSelectAllProxies = () => {
-    if (selectedProxyIds.length === proxies.length) {
-      setSelectedProxyIds([]);
-    } else {
-      setSelectedProxyIds(proxies.map(proxy => proxy.id));
+  const handleClearLogs = async () => {
+    try {
+      const res = await apiFetch(`${NEST_BASE_URL}/automation/logs`, { method: 'DELETE' });
+      if (res.ok) {
+        setLogs([]);
+      }
+    } catch (err) {
+      console.error('Failed to clear logs:', err);
     }
   };
 
   // Filter Accounts
-  const filteredAccounts = accounts.filter(acc => {
-    const matchesCat = activeCategory === 'all' || acc.categoryId === activeCategory;
-    const matchesSearch =
-      acc.username.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      acc.displayName.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      (acc.notes || '').toLowerCase().includes(searchQuery.toLowerCase());
-    const matchesStatus = statusFilter === 'all' || acc.status === statusFilter;
-    return matchesCat && matchesSearch && matchesStatus;
-  });
+  const filteredAccounts = useMemo(() => {
+    return accounts.filter((acc) => {
+      const matchesCat = activeCategory === 'all' || acc.categoryId === activeCategory;
+      const matchesSearch =
+        acc.username.toLowerCase().includes(searchQuery.toLowerCase()) ||
+        acc.displayName.toLowerCase().includes(searchQuery.toLowerCase()) ||
+        (acc.notes || '').toLowerCase().includes(searchQuery.toLowerCase());
+      const matchesStatus = statusFilter === 'all' || acc.status === statusFilter;
+      return matchesCat && matchesSearch && matchesStatus;
+    });
+  }, [accounts, activeCategory, searchQuery, statusFilter]);
+
+  // Precise Selection Calculations (Safe across search & category filters)
+  const visibleAccountIds = useMemo(() => filteredAccounts.map((a) => a.id), [filteredAccounts]);
+  const { isAllSelected: isAllVisibleAccountsSelected, isIndeterminate: isAccountsIndeterminate } = useMemo(
+    () => computeVisibleSelection(selectedAccountIds, visibleAccountIds),
+    [selectedAccountIds, visibleAccountIds]
+  );
+
+  const visibleProxyIds = useMemo(() => proxies.map((p) => p.id), [proxies]);
+  const { isAllSelected: isAllVisibleProxiesSelected, isIndeterminate: isProxiesIndeterminate } = useMemo(
+    () => computeVisibleSelection(selectedProxyIds, visibleProxyIds),
+    [selectedProxyIds, visibleProxyIds]
+  );
 
   return (
     <div className="app-root">
       {/* Header Bar */}
       <header className="app-header">
         <div className="brand-section">
-          <div className="logo-icon">🎵</div>
-          <div>
-            <h1 className="brand-title">TikTok Multi-Thread Automation Studio</h1>
-            <p className="brand-subtitle">Quản Lý Đa Luồng & Tương Tác Tự Động TikTok Studio</p>
+          <div className="logo-badge">
+            <IconTiktok size={20} color="#ffffff" />
+          </div>
+          <div className="brand-text">
+            <div className="brand-title">
+              TikTok Automation Studio
+              <span className="brand-tag">Ops Pro</span>
+            </div>
+            <div className="brand-subtitle">Hệ Thống Quản Lý Đa Luồng & Seeding Tự Động</div>
           </div>
         </div>
 
         <div className="header-actions">
+          {/* Quick Metrics */}
+          <div className="header-metric">
+            <span>Tài khoản:</span>
+            <span className="header-metric-val">{accounts.length}</span>
+          </div>
+          <div className="header-metric">
+            <span>Proxy:</span>
+            <span className="header-metric-val">{proxies.length}</span>
+          </div>
+
+          {/* Nest Status */}
           <div className={`status-badge ${nestStatus ? 'online' : 'offline'}`}>
             <span className="status-dot"></span>
-            <span>{loadingStatus ? 'Đang kết nối...' : nestStatus ? 'NestJS Backend Active' : 'Backend Offline'}</span>
+            <span>
+              {loadingStatus ? 'Đang kết nối...' : nestStatus ? 'Backend Active' : 'Backend Offline'}
+            </span>
           </div>
+
+          {/* Theme Toggle Button */}
+          <ThemeToggle theme={theme} onToggle={toggleTheme} />
         </div>
       </header>
 
       <div className="app-shell">
+        {/* Sidebar Navigation */}
         <aside className="app-sidebar">
-          <div className="sidebar-section-label">Điều hướng</div>
+          <div className="sidebar-section-label">Menu Điều Hướng</div>
           <nav className="tab-bar">
-          <button
-            className={`tab-btn ${activeTab === 'accounts' ? 'active' : ''}`}
-            onClick={() => setActiveTab('accounts')}
-          >
-            <span>📋</span> Quản Lý Tài Khoản Đa Luồng ({accounts.length})
-          </button>
-          <button
-            className={`tab-btn ${activeTab === 'proxies' ? 'active' : ''}`}
-            onClick={() => setActiveTab('proxies')}
-          >
-            <span>🌐</span> Quản Lý Proxy ({proxies.length})
-          </button>
-          <button
-            className={`tab-btn ${activeTab === 'seeding' ? 'active' : ''}`}
-            onClick={() => setActiveTab('seeding')}
-          >
-            <span>🚀</span> Kịch Bản & Seeding Automation
-          </button>
-          <button
-            className={`tab-btn ${activeTab === 'logs' ? 'active' : ''}`}
-            onClick={() => setActiveTab('logs')}
-          >
-            <span>📊</span> Live Console Logs ({logs.length})
-          </button>
-        </nav>
+            <button
+              className={`tab-btn ${activeTab === 'accounts' ? 'active' : ''}`}
+              onClick={() => setActiveTab('accounts')}
+            >
+              <div className="tab-btn-content">
+                <span className="tab-btn-icon">
+                  <IconUsers size={17} />
+                </span>
+                <span className="tab-btn-text">Quản Lý Tài Khoản</span>
+              </div>
+              <span className="tab-count-badge">{accounts.length}</span>
+            </button>
+
+            <button
+              className={`tab-btn ${activeTab === 'proxies' ? 'active' : ''}`}
+              onClick={() => setActiveTab('proxies')}
+            >
+              <div className="tab-btn-content">
+                <span className="tab-btn-icon">
+                  <IconGlobe size={17} />
+                </span>
+                <span className="tab-btn-text">Kho Proxy</span>
+              </div>
+              <span className="tab-count-badge">{proxies.length}</span>
+            </button>
+
+            <button
+              className={`tab-btn ${activeTab === 'seeding' ? 'active' : ''}`}
+              onClick={() => setActiveTab('seeding')}
+            >
+              <div className="tab-btn-content">
+                <span className="tab-btn-icon">
+                  <IconRocket size={17} />
+                </span>
+                <span className="tab-btn-text">Seeding Automation</span>
+              </div>
+            </button>
+
+            <button
+              className={`tab-btn ${activeTab === 'logs' ? 'active' : ''}`}
+              onClick={() => setActiveTab('logs')}
+            >
+              <div className="tab-btn-content">
+                <span className="tab-btn-icon">
+                  <IconTerminal size={17} />
+                </span>
+                <span className="tab-btn-text">Live Console</span>
+              </div>
+              <span className="tab-count-badge">{logs.length}</span>
+            </button>
+          </nav>
         </aside>
 
-      {/* Main Container */}
-      <main className="main-container">
-
-        {/* TAB 1: ACCOUNTS MULTI-THREAD MANAGEMENT */}
-        {activeTab === 'accounts' && (
-          <div className="accounts-layout">
-            {/* Category Sidebar */}
-            <aside className="category-sidebar">
-              <div className="category-sidebar-header">
-                <span className="category-title">Danh Mục Nhóm</span>
-                <button
-                  className="btn-secondary"
-                  style={{ padding: '0.2rem 0.5rem', fontSize: '0.75rem' }}
-                  onClick={() => setIsAddCategoryOpen(true)}
-                >
-                  + Nhóm
-                </button>
-              </div>
-
-              <div
-                className={`category-item ${activeCategory === 'all' ? 'active' : ''}`}
-                onClick={() => setActiveCategory('all')}
-              >
-                <span>🌐 Tất cả tài khoản</span>
-                <span className="category-count">{accounts.length}</span>
-              </div>
-
-              {categories.map(cat => {
-                const count = accounts.filter(a => a.categoryId === cat.id).length;
-                return (
-                  <div
-                    key={cat.id}
-                    className={`category-item ${activeCategory === cat.id ? 'active' : ''}`}
-                    onClick={() => setActiveCategory(cat.id)}
-                  >
-                    <span style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
-                      <span style={{ width: '8px', height: '8px', borderRadius: '50%', background: cat.color || '#3b82f6' }}></span>
-                      {cat.name}
-                    </span>
-                    <span className="category-count">{count}</span>
-                  </div>
-                );
-              })}
-            </aside>
-
-            {/* Main Accounts Area */}
-            <div className="accounts-content">
-              {/* Action Toolbar */}
-              <div className="toolbar">
-                <div className="toolbar-group">
-                  <button className="btn-primary" onClick={() => setIsBatchImportOpen(true)}>
-                    📥 Nhập Hàng Loạt
-                  </button>
-                  <button className="btn-secondary" onClick={() => setIsSingleAddOpen(true)}>
-                    ➕ Thêm Lẻ
-                  </button>
-
-                  <div style={{ width: '1px', height: '24px', background: 'var(--border-color)', margin: '0 0.2rem' }}></div>
-
-                  {/* Multi-Thread Chrome Launcher */}
-                  <button
-                    className="btn-primary"
-                    style={{ background: 'linear-gradient(135deg, #10b981, #059669)' }}
-                    onClick={handleOpenMultiChromes}
-                  >
-                    🌐 Mở Chrome ({selectedAccountIds.length})
-                  </button>
-                  <button
-                    className="btn-secondary"
-                    style={{ color: '#f43f5e' }}
-                    onClick={handleCloseAllBrowserWindows}
-                  >
-                    Đóng tất cả trình duyệt
-                  </button>
-                  <span style={{ fontSize: '0.78rem', color: 'var(--text-muted)', fontWeight: 700 }}>
-                    Luồng
-                  </span>
-                  <select
-                    className="custom-input"
-                    style={{ width: '112px', padding: '0.45rem' }}
-                    value={maxThreads}
-                    onChange={e => setMaxThreads(Number(e.target.value))}
-                  >
-                    <option value={1}>1 Luồng</option>
-                    <option value={2}>2 Luồng</option>
-                    <option value={3}>3 Luồng</option>
-                    <option value={4}>4 Luồng</option>
-                    <option value={5}>5 Luồng</option>
-                    <option value={6}>6 Luồng</option>
-                    <option value={8}>8 Luồng</option>
-                    <option value={10}>10 Luồng</option>
-                    <option value={12}>12 Luồng</option>
-                    <option value={0}>Tất cả</option>
-                  </select>
-                  <label className="checkbox-label" style={{ fontSize: '0.78rem', fontWeight: 700 }}>
-                    <input
-                      type="checkbox"
-                      className="checkbox-custom"
-                      checked={muteLoginBrowserAudio}
-                      onChange={e => setMuteLoginBrowserAudio(e.target.checked)}
-                    />
-                    Tắt tiếng
-                  </label>
-
-                  <button className="btn-secondary" onClick={handleBulkCheckLive}>
-                    🔍 Check Live
+        {/* Main Content Container */}
+        <main className="main-container">
+          {/* =========================================================================
+              TAB 1: ACCOUNTS MANAGEMENT
+              ========================================================================= */}
+          {activeTab === 'accounts' && (
+            <div className="accounts-layout">
+              {/* Category Sidebar */}
+              <aside className="category-sidebar">
+                <div className="category-sidebar-header">
+                  <span className="category-title">Danh Mục Nhóm</span>
+                  <button className="btn btn-secondary btn-sm" onClick={() => setIsAddCategoryOpen(true)}>
+                    <IconPlus size={13} />
+                    <span>Nhóm</span>
                   </button>
                 </div>
 
-                <div className="toolbar-group">
-                  {/* Bulk Actions */}
-                  {selectedAccountIds.length > 0 && (
-                    <>
+                <div
+                  className={`category-item ${activeCategory === 'all' ? 'active' : ''}`}
+                  onClick={() => setActiveCategory('all')}
+                >
+                  <span style={{ display: 'flex', alignItems: 'center', gap: '0.45rem' }}>
+                    <IconFolder size={14} />
+                    <span>Tất cả tài khoản</span>
+                  </span>
+                  <span className="category-count">{accounts.length}</span>
+                </div>
+
+                {categories.map((cat) => {
+                  const count = accounts.filter((a) => a.categoryId === cat.id).length;
+                  return (
+                    <div
+                      key={cat.id}
+                      className={`category-item ${activeCategory === cat.id ? 'active' : ''}`}
+                      onClick={() => setActiveCategory(cat.id)}
+                    >
+                      <span style={{ display: 'flex', alignItems: 'center', gap: '0.45rem' }}>
+                        <span
+                          className="category-dot"
+                          style={{ background: cat.color || 'var(--primary)' }}
+                        ></span>
+                        <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                          {cat.name}
+                        </span>
+                      </span>
+                      <span className="category-count">{count}</span>
+                    </div>
+                  );
+                })}
+              </aside>
+
+              {/* Main Accounts Area */}
+              <div className="accounts-content">
+                {/* Action Toolbar */}
+                <div className="toolbar">
+                  <div className="toolbar-group">
+                    <button className="btn btn-primary" onClick={() => setIsBatchImportOpen(true)}>
+                      <IconUpload size={15} />
+                      <span>Nhập Hàng Loạt</span>
+                    </button>
+                    <button className="btn btn-secondary" onClick={() => setIsSingleAddOpen(true)}>
+                      <IconPlus size={15} />
+                      <span>Thêm Lẻ</span>
+                    </button>
+
+                    <div className="toolbar-divider"></div>
+
+                    {/* Multi-Thread Chrome Launcher */}
+                    <button className="btn btn-success" onClick={handleOpenMultiChromes}>
+                      <IconPlay size={14} />
+                      <span>Mở Chrome ({selectedAccountIds.length})</span>
+                    </button>
+                    <button className="btn btn-secondary btn-danger" onClick={handleCloseAllBrowserWindows}>
+                      <IconStop size={14} />
+                      <span>Đóng Trình Duyệt</span>
+                    </button>
+
+                    <div className="toolbar-divider"></div>
+
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.35rem' }}>
+                      <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)', fontWeight: 600 }}>
+                        Luồng:
+                      </span>
                       <select
                         className="custom-input"
-                        style={{ width: '140px', padding: '0.45rem' }}
-                        onChange={e => {
+                        style={{ width: '95px', padding: '0.35rem 0.5rem', fontSize: '0.78rem' }}
+                        value={maxThreads}
+                        onChange={(e) => setMaxThreads(Number(e.target.value))}
+                      >
+                        <option value={1}>1 Luồng</option>
+                        <option value={2}>2 Luồng</option>
+                        <option value={3}>3 Luồng</option>
+                        <option value={4}>4 Luồng</option>
+                        <option value={5}>5 Luồng</option>
+                        <option value={6}>6 Luồng</option>
+                        <option value={8}>8 Luồng</option>
+                        <option value={10}>10 Luồng</option>
+                        <option value={12}>12 Luồng</option>
+                        <option value={0}>Tất cả</option>
+                      </select>
+                    </div>
+
+                    <label className="checkbox-label" style={{ fontSize: '0.78rem' }}>
+                      <input
+                        type="checkbox"
+                        className="checkbox-custom"
+                        checked={muteLoginBrowserAudio}
+                        onChange={(e) => setMuteLoginBrowserAudio(e.target.checked)}
+                      />
+                      <IconVolumeMute size={14} />
+                      <span>Tắt tiếng</span>
+                    </label>
+
+                    <button className="btn btn-secondary" onClick={handleBulkCheckLive}>
+                      <IconRefresh size={14} />
+                      <span>Check Live</span>
+                    </button>
+                  </div>
+
+                  <div className="toolbar-group">
+                    {/* Search Input */}
+                    <div style={{ position: 'relative', display: 'flex', alignItems: 'center' }}>
+                      <input
+                        type="text"
+                        className="custom-input"
+                        placeholder="Tìm username, tên, note..."
+                        style={{ width: '190px', padding: '0.38rem 0.65rem 0.38rem 1.8rem', fontSize: '0.8rem' }}
+                        value={searchQuery}
+                        onChange={(e) => setSearchQuery(e.target.value)}
+                      />
+                      <span
+                        style={{
+                          position: 'absolute',
+                          left: '0.55rem',
+                          color: 'var(--text-subtle)',
+                          display: 'flex',
+                          pointerEvents: 'none',
+                        }}
+                      >
+                        <IconSearch size={13} />
+                      </span>
+                    </div>
+
+                    {/* Status Filter */}
+                    <select
+                      className="custom-input"
+                      style={{ width: '135px', padding: '0.38rem 0.55rem', fontSize: '0.8rem' }}
+                      value={statusFilter}
+                      onChange={(e) => setStatusFilter(e.target.value)}
+                    >
+                      <option value="all">Tất cả trạng thái</option>
+                      <option value="authenticated">Auth Session</option>
+                      <option value="unauthenticated">Chưa Auth</option>
+                      <option value="live">Live</option>
+                      <option value="die">Die</option>
+                      <option value="checkpoint">Checkpoint</option>
+                    </select>
+                  </div>
+                </div>
+
+                {/* Bulk Actions Banner (Shown when 1 or more accounts are selected) */}
+                {selectedAccountIds.length > 0 && (
+                  <div className="bulk-action-bar">
+                    <div className="bulk-action-text">
+                      <span className="bulk-count-badge">{selectedAccountIds.length}</span>
+                      <span>tài khoản đã được chọn</span>
+                    </div>
+
+                    <div className="toolbar-group">
+                      <select
+                        className="custom-input"
+                        style={{ width: '150px', padding: '0.35rem 0.6rem', fontSize: '0.78rem' }}
+                        onChange={(e) => {
                           if (e.target.value) {
                             handleBulkMoveCategory(e.target.value);
                             e.target.value = '';
                           }
                         }}
+                        defaultValue=""
                       >
-                        <option value="">📁 Chuyển nhóm...</option>
-                        {categories.map(c => (
+                        <option value="" disabled>
+                          📁 Chuyển vào nhóm...
+                        </option>
+                        {categories.map((c) => (
                           <option key={c.id} value={c.id}>
                             {c.name}
                           </option>
                         ))}
                       </select>
 
-                      <button className="btn-secondary" style={{ color: '#f43f5e' }} onClick={handleBulkDelete}>
-                        🗑️ Xóa ({selectedAccountIds.length})
+                      <button className="btn btn-secondary btn-sm" onClick={handleBulkCheckLive}>
+                        <IconRefresh size={13} />
+                        <span>Kiểm tra Live</span>
                       </button>
-                    </>
-                  )}
 
-                  {/* Search Input */}
-                  <input
-                    type="text"
-                    className="custom-input"
-                    placeholder="🔎 Tìm Username / Ghi chú..."
-                    style={{ width: '180px', padding: '0.45rem 0.8rem' }}
-                    value={searchQuery}
-                    onChange={e => setSearchQuery(e.target.value)}
-                  />
+                      <button className="btn btn-danger btn-sm" onClick={handleBulkDelete}>
+                        <IconTrash size={13} />
+                        <span>Xóa ({selectedAccountIds.length})</span>
+                      </button>
 
-                  {/* Status Filter */}
-                  <select
-                    className="custom-input"
-                    style={{ width: '130px', padding: '0.45rem' }}
-                    value={statusFilter}
-                    onChange={e => setStatusFilter(e.target.value)}
+                      <button
+                        className="btn btn-secondary btn-sm"
+                        onClick={() => setSelectedAccountIds([])}
+                      >
+                        Bỏ chọn
+                      </button>
+                    </div>
+                  </div>
+                )}
+
+                {/* Account Data Table */}
+                <div className="table-wrapper">
+                  <table className="account-table">
+                    <thead>
+                      <tr>
+                        <th style={{ width: '38px', textAlign: 'center' }}>
+                          <input
+                            type="checkbox"
+                            className="checkbox-custom"
+                            ref={(el) => {
+                              if (el) el.indeterminate = isAccountsIndeterminate;
+                            }}
+                            checked={isAllVisibleAccountsSelected}
+                            onChange={() =>
+                              setSelectedAccountIds((prev) =>
+                                toggleSelectAllVisible(prev, visibleAccountIds)
+                              )
+                            }
+                          />
+                        </th>
+                        <th style={{ width: '45px' }}>STT</th>
+                        <th>Tài Khoản</th>
+                        <th>Nhóm</th>
+                        <th>Trạng Thái</th>
+                        <th>Cookie</th>
+                        <th>Proxy</th>
+                        <th>Ghi Chú</th>
+                        <th style={{ textAlign: 'right', minWidth: '170px' }}>Hành Động</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {filteredAccounts.length === 0 ? (
+                        <tr>
+                          <td colSpan={9}>
+                            <div className="empty-state">
+                              <div className="empty-state-icon">📋</div>
+                              <div className="empty-state-title">Chưa có tài khoản nào</div>
+                              <div className="empty-state-desc">
+                                Bấm <strong>"Nhập Hàng Loạt"</strong> hoặc <strong>"Thêm Lẻ"</strong> để thêm
+                                danh sách tài khoản TikTok vào hệ thống.
+                              </div>
+                            </div>
+                          </td>
+                        </tr>
+                      ) : (
+                        filteredAccounts.map((acc, idx) => {
+                          const isSelected = selectedAccountIds.includes(acc.id);
+                          const cat = categories.find((c) => c.id === acc.categoryId);
+                          return (
+                            <tr key={acc.id} className={isSelected ? 'selected' : ''}>
+                              <td style={{ textAlign: 'center' }}>
+                                <input
+                                  type="checkbox"
+                                  className="checkbox-custom"
+                                  checked={isSelected}
+                                  onChange={() =>
+                                    setSelectedAccountIds((prev) => toggleSelectId(prev, acc.id))
+                                  }
+                                />
+                              </td>
+                              <td style={{ color: 'var(--text-subtle)', fontSize: '0.78rem' }}>{idx + 1}</td>
+                              <td>
+                                <div style={{ display: 'flex', alignItems: 'center', gap: '0.6rem' }}>
+                                  <div className="acc-avatar">
+                                    {acc.username.charAt(0).toUpperCase()}
+                                  </div>
+                                  <div>
+                                    <div style={{ fontWeight: 700, color: 'var(--text-primary)' }}>
+                                      @{acc.username}
+                                    </div>
+                                    <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)' }}>
+                                      {acc.displayName || 'Chưa đặt tên'}
+                                    </div>
+                                  </div>
+                                </div>
+                              </td>
+                              <td>
+                                <span className="badge-category">
+                                  <span
+                                    className="category-dot"
+                                    style={{ background: cat?.color || 'var(--primary)' }}
+                                  ></span>
+                                  {cat?.name || 'Mặc Định'}
+                                </span>
+                              </td>
+                              <td>
+                                <StatusBadge status={acc.status} />
+                              </td>
+                              <td>
+                                {acc.cookie ? (
+                                  <span style={{ color: 'var(--accent-emerald)', fontSize: '0.75rem', fontWeight: 600 }}>
+                                    ✓ Đã có
+                                  </span>
+                                ) : (
+                                  <span style={{ color: 'var(--text-subtle)', fontSize: '0.75rem' }}>
+                                    Chưa có
+                                  </span>
+                                )}
+                              </td>
+                              <td>
+                                <span
+                                  style={{
+                                    fontFamily: 'var(--font-mono)',
+                                    fontSize: '0.75rem',
+                                    color: acc.proxy ? 'var(--accent-cyan)' : 'var(--text-subtle)',
+                                  }}
+                                >
+                                  {acc.proxy || 'None'}
+                                </span>
+                              </td>
+                              <td style={{ color: 'var(--text-muted)', fontSize: '0.75rem', maxWidth: '140px', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                                {acc.notes || '-'}
+                              </td>
+                              <td style={{ textAlign: 'right' }}>
+                                <div style={{ display: 'inline-flex', gap: '0.3rem' }}>
+                                  <button
+                                    className="btn btn-secondary btn-sm"
+                                    onClick={() => handleOpenSingleChrome(acc)}
+                                    title="Mở trình duyệt Chrome với tài khoản này"
+                                  >
+                                    <IconPlay size={12} />
+                                    <span>Chrome</span>
+                                  </button>
+                                  <button
+                                    className="btn-action-icon"
+                                    style={{ color: 'var(--accent-purple)' }}
+                                    onClick={() => handleTestGenerate2FA(acc)}
+                                    title="Tính toán thử nghiệm mã 2FA TOTP 6 số"
+                                  >
+                                    <IconKey size={13} />
+                                  </button>
+                                  <button
+                                    className="btn-action-icon"
+                                    style={{ color: 'var(--accent-amber)' }}
+                                    onClick={() => handleTestFetchOtp(acc)}
+                                    title="Thử nghiệm đọc OTP 6 số từ hòm thư"
+                                  >
+                                    <IconMail size={13} />
+                                  </button>
+                                  <button
+                                    className="btn-action-icon danger"
+                                    onClick={() => handleDeleteAccount(acc.id)}
+                                    title="Xóa tài khoản này"
+                                  >
+                                    <IconTrash size={13} />
+                                  </button>
+                                </div>
+                              </td>
+                            </tr>
+                          );
+                        })
+                      )}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* =========================================================================
+              TAB 2: PROXY MANAGEMENT
+              ========================================================================= */}
+          {activeTab === 'proxies' && (
+            <div
+              style={{
+                display: 'grid',
+                gridTemplateColumns: 'minmax(300px, 380px) 1fr',
+                gap: '1rem',
+                alignItems: 'start',
+                minHeight: 0,
+                flex: 1,
+              }}
+            >
+              {/* Left Column: Import & Metrics */}
+              <div className="card-panel">
+                <div className="card-header">
+                  <h3 className="card-title">
+                    <span className="card-icon">
+                      <IconGlobe size={18} />
+                    </span>
+                    Nhập Proxy Vào Kho
+                  </h3>
+                </div>
+
+                <form onSubmit={handleProxyImport} style={{ display: 'flex', flexDirection: 'column', gap: '0.85rem' }}>
+                  <div className="input-group">
+                    <label className="input-label">
+                      <span>Danh sách proxy (mỗi dòng 1 proxy)</span>
+                      <span className="input-hint">ip:port hoặc user:pass@ip:port</span>
+                    </label>
+                    <textarea
+                      className="textarea-custom"
+                      rows={6}
+                      placeholder={`1.2.3.4:8080\nuser:pass@1.2.3.4:8080\n1.2.3.4:8080:user:pass`}
+                      value={proxyImportText}
+                      onChange={(e) => setProxyImportText(e.target.value)}
+                    />
+                  </div>
+
+                  <div className="input-group">
+                    <label className="input-label">Loại proxy</label>
+                    <select
+                      className="custom-input"
+                      value={proxyImportType}
+                      onChange={(e) => setProxyImportType(e.target.value as ProxyEntry['proxyType'])}
+                    >
+                      <option value="http">HTTP Proxy</option>
+                      <option value="socks5">SOCKS5 Proxy</option>
+                      <option value="tmproxy">TMProxy API Key</option>
+                      <option value="tinsoft">Tinsoft API Key</option>
+                    </select>
+                  </div>
+
+                  <button type="submit" className="btn btn-primary" style={{ width: '100%' }}>
+                    <IconUpload size={14} />
+                    <span>Nhập Proxy Vào Kho</span>
+                  </button>
+                </form>
+
+                {/* Metrics */}
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.65rem', marginTop: '0.35rem' }}>
+                  <div
+                    style={{
+                      padding: '0.75rem',
+                      border: '1px solid var(--border-color)',
+                      borderRadius: 'var(--radius-md)',
+                      background: 'var(--bg-surface-subtle)',
+                    }}
                   >
-                    <option value="all">Tất cả trạng thái</option>
-                    <option value="authenticated">Auth Session</option>
-                    <option value="unauthenticated">Chưa Auth</option>
-                    <option value="live">Live</option>
-                    <option value="die">Die</option>
-                  </select>
+                    <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)', fontWeight: 600 }}>
+                      Proxy trong kho
+                    </div>
+                    <div style={{ fontSize: '1.35rem', fontWeight: 800, color: 'var(--text-primary)' }}>
+                      {proxies.length}
+                    </div>
+                  </div>
+                  <div
+                    style={{
+                      padding: '0.75rem',
+                      border: '1px solid var(--border-color)',
+                      borderRadius: 'var(--radius-md)',
+                      background: 'var(--bg-surface-subtle)',
+                    }}
+                  >
+                    <div style={{ fontSize: '0.72rem', color: 'var(--text-muted)', fontWeight: 600 }}>
+                      Tài khoản đã có proxy
+                    </div>
+                    <div style={{ fontSize: '1.35rem', fontWeight: 800, color: 'var(--primary)' }}>
+                      {accounts.filter((acc) => !!acc.proxy).length}
+                    </div>
+                  </div>
                 </div>
               </div>
 
-              {/* Data Table */}
-              <div className="table-wrapper">
-                <table className="account-table">
-                  <thead>
-                    <tr>
-                      <th style={{ width: '40px' }}>
-                        <input
-                          type="checkbox"
-                          className="checkbox-custom"
-                          checked={filteredAccounts.length > 0 && selectedAccountIds.length === filteredAccounts.length}
-                          onChange={() => toggleSelectAll(filteredAccounts)}
-                        />
-                      </th>
-                      <th>STT</th>
-                      <th>Username</th>
-                      <th>Nhóm</th>
-                      <th>Trạng Thái</th>
-                      <th>Cookie</th>
-                      <th>Proxy</th>
-                      <th>Ghi Chú</th>
-                      <th style={{ textAlign: 'right' }}>Hành Động</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {filteredAccounts.length === 0 ? (
+              {/* Right Column: Assign & Proxy Table */}
+              <div className="card-panel" style={{ flex: 1 }}>
+                <div className="card-header">
+                  <h3 className="card-title">
+                    <span className="card-icon">
+                      <IconUsers size={18} />
+                    </span>
+                    Gán Proxy Cho Tài Khoản
+                  </h3>
+                </div>
+
+                <div className="toolbar">
+                  <div className="toolbar-group">
+                    <span style={{ fontSize: '0.8rem', color: 'var(--text-secondary)', fontWeight: 600 }}>
+                      Đã chọn {selectedProxyIds.length} proxy & {selectedAccountIds.length} tài khoản
+                    </span>
+
+                    <select
+                      className="custom-input"
+                      style={{ width: '130px', padding: '0.35rem 0.5rem', fontSize: '0.78rem' }}
+                      value={proxyAssignMode}
+                      onChange={(e) => setProxyAssignMode(e.target.value as 'rotate' | 'one-to-one')}
+                    >
+                      <option value="rotate">Xoay vòng</option>
+                      <option value="one-to-one">1 proxy / 1 acc</option>
+                    </select>
+
+                    <button className="btn btn-primary btn-sm" onClick={handleAssignSelectedProxies}>
+                      Gán Proxy
+                    </button>
+                    <button className="btn btn-secondary btn-sm" onClick={handleClearSelectedAccountProxies}>
+                      Gỡ Khỏi Acc Đã Chọn
+                    </button>
+                  </div>
+                </div>
+
+                <div className="table-wrapper" style={{ maxHeight: '420px' }}>
+                  <table className="account-table">
+                    <thead>
                       <tr>
-                        <td colSpan={9} style={{ textAlign: 'center', padding: '3rem', color: 'var(--text-muted)' }}>
-                          Chưa có tài khoản nào trong nhóm này. Hãy bấm <strong>"📥 Nhập Hàng Loạt"</strong> để bắt đầu.
-                        </td>
+                        <th style={{ width: '38px', textAlign: 'center' }}>
+                          <input
+                            type="checkbox"
+                            className="checkbox-custom"
+                            ref={(el) => {
+                              if (el) el.indeterminate = isProxiesIndeterminate;
+                            }}
+                            checked={isAllVisibleProxiesSelected}
+                            onChange={() =>
+                              setSelectedProxyIds((prev) =>
+                                toggleSelectAllVisible(prev, visibleProxyIds)
+                              )
+                            }
+                          />
+                        </th>
+                        <th>Địa Chỉ Proxy</th>
+                        <th>Loại</th>
+                        <th>Đang Gán Cho</th>
+                        <th style={{ textAlign: 'right' }}>Hành Động</th>
                       </tr>
-                    ) : (
-                      filteredAccounts.map((acc, idx) => {
-                        const isSelected = selectedAccountIds.includes(acc.id);
-                        const cat = categories.find(c => c.id === acc.categoryId);
-                        return (
-                          <tr key={acc.id} className={isSelected ? 'selected' : ''}>
-                            <td>
-                              <input
-                                type="checkbox"
-                                className="checkbox-custom"
-                                checked={isSelected}
-                                onChange={() => toggleSelectAccount(acc.id)}
-                              />
-                            </td>
-                            <td style={{ color: 'var(--text-muted)' }}>{idx + 1}</td>
-                            <td>
-                              <div style={{ display: 'flex', alignItems: 'center', gap: '0.6rem' }}>
-                                <div className="acc-avatar" style={{ width: '32px', height: '32px', fontSize: '0.85rem' }}>
-                                  {acc.username.charAt(0).toUpperCase()}
-                                </div>
-                                <div>
-                                  <div style={{ fontWeight: 700 }}>@{acc.username}</div>
-                                  <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>{acc.displayName}</div>
-                                </div>
+                    </thead>
+                    <tbody>
+                      {proxies.length === 0 ? (
+                        <tr>
+                          <td colSpan={5}>
+                            <div className="empty-state">
+                              <div className="empty-state-icon">🌐</div>
+                              <div className="empty-state-title">Chưa có proxy nào</div>
+                              <div className="empty-state-desc">
+                                Nhập danh sách proxy ở bảng bên trái để phân bổ cho tài khoản.
                               </div>
-                            </td>
-                            <td>
-                              <span
+                            </div>
+                          </td>
+                        </tr>
+                      ) : (
+                        proxies.map((proxy) => {
+                          const assignedAccounts = accounts.filter((acc) => acc.proxy === proxy.value);
+                          return (
+                            <tr
+                              key={proxy.id}
+                              className={selectedProxyIds.includes(proxy.id) ? 'selected' : ''}
+                            >
+                              <td style={{ textAlign: 'center' }}>
+                                <input
+                                  type="checkbox"
+                                  className="checkbox-custom"
+                                  checked={selectedProxyIds.includes(proxy.id)}
+                                  onChange={() =>
+                                    setSelectedProxyIds((prev) => toggleSelectId(prev, proxy.id))
+                                  }
+                                />
+                              </td>
+                              <td
                                 style={{
-                                  padding: '0.2rem 0.6rem',
-                                  borderRadius: '6px',
-                                  fontSize: '0.75rem',
-                                  background: 'rgba(255,255,255,0.06)',
-                                  border: `1px solid ${cat?.color || 'var(--border-color)'}`,
+                                  fontFamily: 'var(--font-mono)',
+                                  color: 'var(--accent-cyan)',
+                                  fontWeight: 600,
                                 }}
                               >
-                                {cat?.name || 'Mặc Định'}
-                              </span>
-                            </td>
-                            <td>
-                              <span className={`badge-status ${acc.status}`}>
-                                {acc.status === 'authenticated'
-                                  ? '✓ Auth Session'
-                                  : acc.status === 'live'
-                                  ? 'Live'
-                                  : acc.status === 'die'
-                                  ? 'Die'
-                                  : 'Chưa Đăng Nhập'}
-                              </span>
-                            </td>
-                            <td>
-                              {acc.cookie ? (
-                                <span style={{ color: '#34d399', fontSize: '0.8rem' }}>🔑 Cooie OK</span>
-                              ) : (
-                                <span style={{ color: '#64748b', fontSize: '0.8rem' }}>Chưa có</span>
-                              )}
-                            </td>
-                            <td>
-                              <span style={{ fontFamily: 'var(--font-mono)', fontSize: '0.8rem', color: '#38bdf8' }}>
-                                {acc.proxy || 'None'}
-                              </span>
-                            </td>
-                            <td style={{ color: 'var(--text-muted)', fontSize: '0.8rem' }}>{acc.notes || '-'}</td>
-                            <td style={{ textAlign: 'right' }}>
-                              <button
-                                className="btn-secondary"
-                                style={{ padding: '0.3rem 0.6rem', fontSize: '0.75rem', marginRight: '0.4rem' }}
-                                onClick={() => handleOpenSingleChrome(acc)}
-                              >
-                                🔑 Mở Chrome
-                              </button>
-                              <button
-                                className="btn-secondary"
-                                style={{ padding: '0.3rem 0.6rem', fontSize: '0.75rem', marginRight: '0.4rem', color: '#a855f7' }}
-                                onClick={() => handleTestGenerate2FA(acc)}
-                                title="Tính toán thử nghiệm mã 2FA TOTP 6 số"
-                              >
-                                🔑 2FA
-                              </button>
-                              <button
-                                className="btn-secondary"
-                                style={{ padding: '0.3rem 0.6rem', fontSize: '0.75rem', marginRight: '0.4rem', color: '#fbbf24' }}
-                                onClick={() => handleTestFetchOtp(acc)}
-                                title="Thử nghiệm đọc OTP 6 số từ hòm thư"
-                              >
-                                📬 OTP
-                              </button>
-
-                              <button
-                                className="btn-secondary"
-                                style={{ padding: '0.3rem 0.6rem', fontSize: '0.75rem', color: '#f43f5e' }}
-                                onClick={() => handleDeleteAccount(acc.id)}
-                              >
-                                🗑️
-                              </button>
-                            </td>
-
-                          </tr>
-                        );
-                      })
-                    )}
-                  </tbody>
-                </table>
-              </div>
-            </div>
-          </div>
-        )}
-
-        {/* TAB 2: PROXY MANAGEMENT */}
-        {activeTab === 'proxies' && (
-          <div style={{ display: 'grid', gridTemplateColumns: 'minmax(320px, 420px) 1fr', gap: '1.5rem', alignItems: 'start' }}>
-            <div className="card">
-              <div className="card-header">
-                <h3 className="card-title">
-                  <span className="card-icon">🌐</span> Kho Proxy
-                </h3>
-              </div>
-
-              <form onSubmit={handleProxyImport} style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
-                <div className="input-group">
-                  <label className="input-label">Danh sách proxy, mỗi dòng 1 proxy</label>
-                  <textarea
-                    className="textarea-custom"
-                    rows={8}
-                    placeholder={`1.2.3.4:8080\nuser:pass@1.2.3.4:8080\n1.2.3.4:8080:user:pass`}
-                    value={proxyImportText}
-                    onChange={e => setProxyImportText(e.target.value)}
-                  />
-                </div>
-
-                <div className="input-group">
-                  <label className="input-label">Loại proxy mặc định</label>
-                  <select
-                    className="custom-input"
-                    value={proxyImportType}
-                    onChange={e => setProxyImportType(e.target.value as ProxyEntry['proxyType'])}
-                  >
-                    <option value="http">HTTP</option>
-                    <option value="socks5">SOCKS5</option>
-                    <option value="tmproxy">TMProxy</option>
-                    <option value="tinsoft">Tinsoft</option>
-                  </select>
-                </div>
-
-                <button type="submit" className="btn-primary">
-                  Nhập proxy vào kho
-                </button>
-              </form>
-
-              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.75rem' }}>
-                <div style={{ padding: '0.75rem', border: '1px solid var(--border-color)', borderRadius: '8px' }}>
-                  <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>Proxy trong kho</div>
-                  <div style={{ fontSize: '1.4rem', fontWeight: 800 }}>{proxies.length}</div>
-                </div>
-                <div style={{ padding: '0.75rem', border: '1px solid var(--border-color)', borderRadius: '8px' }}>
-                  <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>Tài khoản đã có proxy</div>
-                  <div style={{ fontSize: '1.4rem', fontWeight: 800 }}>{accounts.filter(acc => !!acc.proxy).length}</div>
+                                {proxy.value}
+                              </td>
+                              <td>
+                                <span className="badge-status authenticated">
+                                  {proxy.proxyType.toUpperCase()}
+                                </span>
+                              </td>
+                              <td>
+                                {assignedAccounts.length > 0 ? (
+                                  <span style={{ fontSize: '0.78rem' }}>
+                                    {assignedAccounts
+                                      .slice(0, 2)
+                                      .map((acc) => `@${acc.username}`)
+                                      .join(', ')}
+                                    {assignedAccounts.length > 2
+                                      ? ` +${assignedAccounts.length - 2}`
+                                      : ''}
+                                  </span>
+                                ) : (
+                                  <span style={{ color: 'var(--text-subtle)', fontSize: '0.75rem' }}>
+                                    Chưa gán
+                                  </span>
+                                )}
+                              </td>
+                              <td style={{ textAlign: 'right' }}>
+                                <button
+                                  className="btn-action-icon danger"
+                                  onClick={() => handleDeleteProxy(proxy.id)}
+                                  title="Xóa proxy"
+                                >
+                                  <IconTrash size={13} />
+                                </button>
+                              </td>
+                            </tr>
+                          );
+                        })
+                      )}
+                    </tbody>
+                  </table>
                 </div>
               </div>
             </div>
+          )}
 
-            <div className="card">
-              <div className="card-header">
-                <h3 className="card-title">
-                  <span className="card-icon">🔗</span> Gán Proxy Cho Tài Khoản
-                </h3>
-              </div>
+          {/* =========================================================================
+              TAB 3: SEEDING AUTOMATION
+              ========================================================================= */}
+          {activeTab === 'seeding' && (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
+              <div className="card-panel">
+                <div className="card-header">
+                  <div>
+                    <h3 className="card-title">
+                      <span className="card-icon">
+                        <IconRocket size={18} />
+                      </span>
+                      Cấu Hình Tác Vụ Seeding Automation
+                    </h3>
+                    <div className="card-subtitle">
+                      Chạy tự động tương tác Like, Comment và Giữ Live đa luồng
+                    </div>
+                  </div>
 
-              <div className="toolbar">
-                <div className="toolbar-group">
-                  <span style={{ fontSize: '0.85rem', color: 'var(--text-muted)' }}>
-                    Đã chọn {selectedProxyIds.length} proxy và {selectedAccountIds.length} tài khoản
-                  </span>
-                  <select
-                    className="custom-input"
-                    style={{ width: '150px', padding: '0.45rem' }}
-                    value={proxyAssignMode}
-                    onChange={e => setProxyAssignMode(e.target.value as 'rotate' | 'one-to-one')}
-                  >
-                    <option value="rotate">Xoay vòng</option>
-                    <option value="one-to-one">1 proxy / 1 acc</option>
-                  </select>
-                  <button className="btn-primary" onClick={handleAssignSelectedProxies}>
-                    Gán proxy
-                  </button>
-                  <button className="btn-secondary" onClick={handleClearSelectedAccountProxies}>
-                    Bỏ proxy khỏi acc đã chọn
-                  </button>
+                  <div style={{ fontSize: '0.8rem', color: 'var(--text-secondary)', fontWeight: 600 }}>
+                    Đã chọn: <span style={{ color: 'var(--primary)', fontWeight: 700 }}>{selectedAccountIds.length}</span> tài khoản
+                  </div>
                 </div>
-              </div>
 
-              <div className="table-wrapper">
-                <table className="account-table">
-                  <thead>
-                    <tr>
-                      <th style={{ width: '40px' }}>
+                {/* Section 1: Target */}
+                <div style={{ display: 'grid', gridTemplateColumns: '2fr 1fr', gap: '1rem' }}>
+                  <div className="input-group">
+                    <label className="input-label">
+                      <span>Đường dẫn TikTok Target (Video hoặc Livestream)</span>
+                    </label>
+                    <input
+                      type="text"
+                      className="custom-input"
+                      placeholder="https://www.tiktok.com/@user/video/123... hoặc /live"
+                      value={targetUrl}
+                      onChange={(e) => setTargetUrl(e.target.value)}
+                    />
+                  </div>
+
+                  <div className="input-group">
+                    <label className="input-label">Loại Target</label>
+                    <div className="segmented-control">
+                      <button
+                        type="button"
+                        className={`segmented-option ${targetType === 'video' ? 'active' : ''}`}
+                        onClick={() => setTargetType('video')}
+                      >
+                        🎬 Video TikTok
+                      </button>
+                      <button
+                        type="button"
+                        className={`segmented-option ${targetType === 'livestream' ? 'active' : ''}`}
+                        onClick={() => setTargetType('livestream')}
+                      >
+                        📡 Livestream
+                      </button>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Section 2: Actions & Settings */}
+                <div
+                  style={{
+                    display: 'grid',
+                    gridTemplateColumns: 'repeat(auto-fit, minmax(240px, 1fr))',
+                    gap: '1rem',
+                    padding: '0.85rem',
+                    borderRadius: 'var(--radius-md)',
+                    background: 'var(--bg-surface-subtle)',
+                    border: '1px solid var(--border-color)',
+                  }}
+                >
+                  <div className="input-group">
+                    <label className="input-label">Hành động tương tác</label>
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '0.5rem', marginTop: '0.2rem' }}>
+                      <label className="checkbox-label">
                         <input
                           type="checkbox"
                           className="checkbox-custom"
-                          checked={proxies.length > 0 && selectedProxyIds.length === proxies.length}
-                          onChange={toggleSelectAllProxies}
+                          checked={likeEnabled}
+                          onChange={(e) => setLikeEnabled(e.target.checked)}
                         />
-                      </th>
-                      <th>Proxy</th>
-                      <th>Loại</th>
-                      <th>Đang gán cho</th>
-                      <th style={{ textAlign: 'right' }}>Hành Động</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {proxies.length === 0 ? (
-                      <tr>
-                        <td colSpan={5} style={{ textAlign: 'center', padding: '3rem', color: 'var(--text-muted)' }}>
-                          Chưa có proxy nào. Hãy nhập danh sách proxy ở khung bên trái.
-                        </td>
-                      </tr>
-                    ) : (
-                      proxies.map(proxy => {
-                        const assignedAccounts = accounts.filter(acc => acc.proxy === proxy.value);
-                        return (
-                          <tr key={proxy.id} className={selectedProxyIds.includes(proxy.id) ? 'selected' : ''}>
-                            <td>
-                              <input
-                                type="checkbox"
-                                className="checkbox-custom"
-                                checked={selectedProxyIds.includes(proxy.id)}
-                                onChange={() => toggleSelectProxy(proxy.id)}
-                              />
-                            </td>
-                            <td style={{ fontFamily: 'var(--font-mono)', color: '#38bdf8' }}>{proxy.value}</td>
-                            <td>
-                              <span className="badge-status authenticated">{proxy.proxyType.toUpperCase()}</span>
-                            </td>
-                            <td>
-                              {assignedAccounts.length > 0 ? (
-                                <span>
-                                  {assignedAccounts.slice(0, 2).map(acc => `@${acc.username}`).join(', ')}
-                                  {assignedAccounts.length > 2 ? ` +${assignedAccounts.length - 2}` : ''}
-                                </span>
-                              ) : (
-                                <span style={{ color: 'var(--text-muted)' }}>Chưa gán</span>
-                              )}
-                            </td>
-                            <td style={{ textAlign: 'right' }}>
-                              <button
-                                className="btn-secondary"
-                                style={{ padding: '0.3rem 0.6rem', fontSize: '0.75rem', color: '#f43f5e' }}
-                                onClick={() => handleDeleteProxy(proxy.id)}
-                              >
-                                Xóa
-                              </button>
-                            </td>
-                          </tr>
-                        );
-                      })
-                    )}
-                  </tbody>
-                </table>
-              </div>
-            </div>
-          </div>
-        )}
-
-        {/* TAB 2: SEEDING AUTOMATION */}
-        {activeTab === 'seeding' && (
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '1.5rem' }}>
-            <div className="card">
-              <div className="card-header">
-                <h3 className="card-title">
-                  <span className="card-icon">⚡</span> Cấu Hình Tác Vụ Seeding Automation
-                </h3>
-              </div>
-
-              <div className="input-group">
-                <label className="input-label">Link Target TikTok (Video hoặc Livestream):</label>
-                <input
-                  type="text"
-                  className="custom-input"
-                  placeholder="https://www.tiktok.com/@user/video/123... hoặc /live"
-                  value={targetUrl}
-                  onChange={e => setTargetUrl(e.target.value)}
-                />
-              </div>
-
-              <div className="input-group">
-                <label className="input-label">Loại Target:</label>
-                <div style={{ display: 'flex', gap: '1rem' }}>
-                  <label className="checkbox-label">
-                    <input
-                      type="radio"
-                      name="targetType"
-                      checked={targetType === 'video'}
-                      onChange={() => setTargetType('video')}
-                    />
-                    🎬 Video TikTok
-                  </label>
-                  <label className="checkbox-label">
-                    <input
-                      type="radio"
-                      name="targetType"
-                      checked={targetType === 'livestream'}
-                      onChange={() => setTargetType('livestream')}
-                    />
-                    📡 TikTok Livestream
-                  </label>
-                </div>
-              </div>
-
-              <div className="input-group">
-                <label className="input-label">Hành động Seeding:</label>
-                <div style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}>
-                  <label className="checkbox-label">
-                    <input
-                      type="checkbox"
-                      className="checkbox-custom"
-                      checked={likeEnabled}
-                      onChange={e => setLikeEnabled(e.target.checked)}
-                    />
-                    ❤️ Thả tim (Like video / Tap Live liên tục)
-                  </label>
-                  <label className="checkbox-label">
-                    <input
-                      type="checkbox"
-                      className="checkbox-custom"
-                      checked={muteBrowserAudio}
-                      onChange={e => setMuteBrowserAudio(e.target.checked)}
-                    />
-                    Tắt âm thanh trình duyệt worker
-                  </label>
-                </div>
-              </div>
-
-              <div className="input-group">
-                <label className="input-label">OmoCaptcha API Key (TikTok Web captcha)</label>
-                <div style={{ display: 'grid', gridTemplateColumns: '1fr auto', gap: '0.75rem' }}>
-                  <input
-                    type="password"
-                    className="custom-input"
-                    placeholder="Nhập OmoCaptcha clientKey"
-                    value={omocaptchaApiKey}
-                    onChange={e => setOmocaptchaApiKey(e.target.value)}
-                  />
-                  <button type="button" className="btn-secondary" onClick={handleSaveOmocaptchaKey}>
-                    Lưu key
-                  </button>
-                </div>
-                <div style={{ fontSize: '0.78rem', color: 'var(--text-muted)' }}>
-                  App sẽ tự thử giải TikTok Slider / Rotate / Select Object / 3D Select Object Web captcha bằng OmoCaptcha khi gặp màn hình xác minh.
-                </div>
-              </div>
-
-              <div className="input-group">
-                <label className="input-label">Danh sách Nội dung Bình luận (Mỗi dòng là 1 comment ngẫu nhiên):</label>
-                <textarea
-                  className="textarea-custom"
-                  rows={4}
-                  value={commentsInput}
-                  onChange={e => setCommentsInput(e.target.value)}
-                  placeholder="Nhập nội dung bình luận..."
-                ></textarea>
-              </div>
-
-              <div className="input-group">
-                <label className="input-label">Thời gian trễ giữa các tài khoản: {delaySeconds} giây</label>
-                <input
-                  type="range"
-                  min={2}
-                  max={30}
-                  value={delaySeconds}
-                  onChange={e => setDelaySeconds(Number(e.target.value))}
-                  style={{ width: '100%' }}
-                />
-              </div>
-
-              <div className="input-group">
-                <label className="input-label">Số luồng seeding chạy cùng lúc:</label>
-                <select
-                  className="custom-input"
-                  value={seedingThreads}
-                  onChange={e => setSeedingThreads(Number(e.target.value))}
-                >
-                  <option value={1}>1 Luồng</option>
-                  <option value={2}>2 Luồng</option>
-                  <option value={3}>3 Luồng</option>
-                  <option value={4}>4 Luồng</option>
-                  <option value={5}>5 Luồng</option>
-                  <option value={6}>6 Luồng</option>
-                  <option value={8}>8 Luồng</option>
-                  <option value={10}>10 Luồng</option>
-                  <option value={12}>12 Luồng</option>
-                  <option value={0}>Tất cả</option>
-                </select>
-              </div>
-
-              <div className="input-group">
-                <label className="input-label">Thời gian giữ Livestream: {liveDurationSeconds} giây</label>
-                <input
-                  type="number"
-                  className="custom-input"
-                  min={10}
-                  max={600}
-                  step={5}
-                  value={liveDurationSeconds}
-                  onChange={e => setLiveDurationSeconds(Number(e.target.value))}
-                />
-              </div>
-
-              <button
-                className="btn-primary"
-                style={{ marginTop: '1rem', padding: '1rem', fontSize: '1rem' }}
-                disabled={isTaskExecuting}
-                onClick={async () => {
-                  if (selectedAccountIds.length === 0) {
-                    alert('Vui lòng chọn ít nhất 1 tài khoản ở Tab 1!');
-                    return;
-                  }
-                  setIsTaskExecuting(true);
-                  setActiveTab('logs');
-                  try {
-                    if (window.electronAPI?.executeSeedingTask) {
-                      const selectedAccs = accounts.filter(a => selectedAccountIds.includes(a.id));
-                      const seedingThreadCount = seedingThreads === 0 ? selectedAccountIds.length : seedingThreads;
-                      await window.electronAPI.executeSeedingTask(
-                        {
-                          targetUrl,
-                          targetType,
-                          accountIds: selectedAccountIds,
-                          likeEnabled,
-                          comments: commentsInput.split('\n').filter(c => c.trim().length > 0),
-                          delaySeconds,
-                          maxThreads: seedingThreadCount,
-                          liveDurationSeconds,
-                          muteBrowserAudio,
-                        },
-                        selectedAccs
-                      );
-                    }
-                  } catch (err) {
-                    console.error('Seeding task failed:', err);
-                    alert('Tác vụ Seeding đã dừng hoặc gặp lỗi. Vui lòng kiểm tra nhật ký để biết chi tiết.');
-                  } finally {
-                    setIsTaskExecuting(false);
-                  }
-                }}
-              >
-                {isTaskExecuting ? '⏳ Đang khởi chạy Seeding...' : '🚀 Bắt đầu Seeding ngay (' + selectedAccountIds.length + ' Acc)'}
-              </button>
-            </div>
-          </div>
-        )}
-
-        {/* TAB 3: LOGS CONSOLE */}
-        {activeTab === 'logs' && (
-          <div style={{ display: 'flex', flexDirection: 'column', gap: '1.5rem' }}>
-            <div className="card">
-              <div className="card-header">
-                <h3 className="card-title">
-                  <span className="card-icon">🖥️</span> Nhật Ký Hoạt Động Real-time
-                </h3>
-              </div>
-
-              <div className="terminal-window">
-                {logs.length === 0 ? (
-                  <div style={{ color: '#64748b', textAlign: 'center', padding: '3rem' }}>
-                    Chưa có nhật ký nào. Hãy khởi chạy tác vụ Seeding hoặc Mở Chrome!
-                  </div>
-                ) : (
-                  logs.map(log => (
-                    <div key={log.id} className="log-line">
-                      <span className="log-time">[{log.timestamp}]</span>
-                      <span className={`log-tag ${log.level}`}>{log.level}</span>
-                      {log.accountUsername && <span className="log-user">[@{log.accountUsername}]:</span>}
-                      <span className="log-msg">{log.message}</span>
+                        <span>❤️ Thả tim (Like video / Tap Live liên tục)</span>
+                      </label>
+                      <label className="checkbox-label">
+                        <input
+                          type="checkbox"
+                          className="checkbox-custom"
+                          checked={muteBrowserAudio}
+                          onChange={(e) => setMuteBrowserAudio(e.target.checked)}
+                        />
+                        <IconVolumeMute size={14} />
+                        <span>Tắt âm thanh trình duyệt worker</span>
+                      </label>
                     </div>
-                  ))
-                )}
+                  </div>
+
+                  <div className="input-group">
+                    <label className="input-label">
+                      <span>Độ trễ giữa các tài khoản:</span>
+                      <strong style={{ color: 'var(--primary)' }}>{delaySeconds}s</strong>
+                    </label>
+                    <input
+                      type="range"
+                      min={2}
+                      max={30}
+                      value={delaySeconds}
+                      onChange={(e) => setDelaySeconds(Number(e.target.value))}
+                      style={{ width: '100%', marginTop: '0.3rem' }}
+                    />
+                  </div>
+
+                  <div className="input-group">
+                    <label className="input-label">Số luồng chạy cùng lúc</label>
+                    <select
+                      className="custom-input"
+                      value={seedingThreads}
+                      onChange={(e) => setSeedingThreads(Number(e.target.value))}
+                    >
+                      <option value={1}>1 Luồng</option>
+                      <option value={2}>2 Luồng</option>
+                      <option value={3}>3 Luồng</option>
+                      <option value={4}>4 Luồng</option>
+                      <option value={5}>5 Luồng</option>
+                      <option value={6}>6 Luồng</option>
+                      <option value={8}>8 Luồng</option>
+                      <option value={10}>10 Luồng</option>
+                      <option value={12}>12 Luồng</option>
+                      <option value={0}>Tất cả tài khoản</option>
+                    </select>
+                  </div>
+
+                  {targetType === 'livestream' && (
+                    <div className="input-group">
+                      <label className="input-label">Thời gian giữ Livestream (giây)</label>
+                      <input
+                        type="number"
+                        className="custom-input"
+                        min={10}
+                        max={600}
+                        step={5}
+                        value={liveDurationSeconds}
+                        onChange={(e) => setLiveDurationSeconds(Number(e.target.value))}
+                      />
+                    </div>
+                  )}
+                </div>
+
+                {/* Section 3: OmoCaptcha */}
+                <div className="input-group">
+                  <label className="input-label">
+                    <span>OmoCaptcha API Key (Tự động giải TikTok Web Captcha)</span>
+                    <span className="input-hint">Slider / Rotate / 3D Select</span>
+                  </label>
+                  <div style={{ display: 'grid', gridTemplateColumns: '1fr auto', gap: '0.6rem' }}>
+                    <input
+                      type="password"
+                      className="custom-input"
+                      placeholder="Nhập OmoCaptcha Client Key..."
+                      value={omocaptchaApiKey}
+                      onChange={(e) => setOmocaptchaApiKey(e.target.value)}
+                    />
+                    <button type="button" className="btn btn-secondary" onClick={handleSaveOmocaptchaKey}>
+                      Lưu Key
+                    </button>
+                  </div>
+                </div>
+
+                {/* Section 4: Comments */}
+                <div className="input-group">
+                  <label className="input-label">
+                    <span>Kịch bản nội dung bình luận</span>
+                    <span className="input-hint">Mỗi dòng là 1 bình luận ngẫu nhiên</span>
+                  </label>
+                  <textarea
+                    className="textarea-custom"
+                    rows={4}
+                    value={commentsInput}
+                    onChange={(e) => setCommentsInput(e.target.value)}
+                    placeholder="Nhập nội dung bình luận..."
+                  ></textarea>
+                </div>
+
+                {/* CTA Bar */}
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '0.4rem', marginTop: '0.5rem' }}>
+                  <button
+                    className="btn btn-primary"
+                    style={{
+                      padding: '0.85rem 1.5rem',
+                      fontSize: '0.95rem',
+                      fontWeight: 700,
+                      width: '100%',
+                    }}
+                    disabled={isTaskExecuting}
+                    onClick={async () => {
+                      if (selectedAccountIds.length === 0) {
+                        alert('Vui lòng chọn ít nhất 1 tài khoản ở Tab Quản Lý Tài Khoản trước khi chạy seeding!');
+                        return;
+                      }
+                      setIsTaskExecuting(true);
+                      setActiveTab('logs');
+                      try {
+                        if (window.electronAPI?.executeSeedingTask) {
+                          const selectedAccs = accounts.filter((a) => selectedAccountIds.includes(a.id));
+                          const seedingThreadCount =
+                            seedingThreads === 0 ? selectedAccountIds.length : seedingThreads;
+                          await window.electronAPI.executeSeedingTask(
+                            {
+                              targetUrl,
+                              targetType,
+                              accountIds: selectedAccountIds,
+                              likeEnabled,
+                              comments: commentsInput.split('\n').filter((c) => c.trim().length > 0),
+                              delaySeconds,
+                              maxThreads: seedingThreadCount,
+                              liveDurationSeconds,
+                              muteBrowserAudio,
+                            },
+                            selectedAccs
+                          );
+                        }
+                      } catch (err) {
+                        console.error('Seeding task failed:', err);
+                        alert('Tác vụ Seeding đã dừng hoặc gặp lỗi. Vui lòng kiểm tra nhật ký để biết chi tiết.');
+                      } finally {
+                        setIsTaskExecuting(false);
+                      }
+                    }}
+                  >
+                    <IconRocket size={18} />
+                    <span>
+                      {isTaskExecuting
+                        ? 'Đang Khởi Chạy Tác Vụ Seeding...'
+                        : `Bắt Đầu Seeding Ngay (${selectedAccountIds.length} Tài Khoản Đã Chọn)`}
+                    </span>
+                  </button>
+
+                  {selectedAccountIds.length === 0 && (
+                    <div style={{ textAlign: 'center', fontSize: '0.75rem', color: 'var(--accent-amber)' }}>
+                      ⚠️ Chưa chọn tài khoản nào. Vui lòng qua tab "Quản Lý Tài Khoản" để tick chọn tài khoản muốn chạy.
+                    </div>
+                  )}
+                </div>
               </div>
             </div>
-          </div>
-        )}
-      </main>
+          )}
+
+          {/* =========================================================================
+              TAB 4: LOGS CONSOLE
+              ========================================================================= */}
+          {activeTab === 'logs' && (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem', flex: 1, minHeight: 0 }}>
+              <div className="card-panel" style={{ flex: 1, minHeight: 0 }}>
+                <div className="card-header">
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '0.6rem' }}>
+                    <h3 className="card-title">
+                      <span className="card-icon">
+                        <IconTerminal size={18} />
+                      </span>
+                      Live Console Logs
+                    </h3>
+                    <span className="tab-count-badge">{logs.length} dòng</span>
+                  </div>
+
+                  <div className="toolbar-group">
+                    <button className="btn btn-secondary btn-sm" onClick={handleClearLogs}>
+                      <IconTrash size={13} />
+                      <span>Xóa Nhật Ký</span>
+                    </button>
+                  </div>
+                </div>
+
+                <div className="terminal-window">
+                  {logs.length === 0 ? (
+                    <div className="empty-state">
+                      <div className="empty-state-icon">🖥️</div>
+                      <div className="empty-state-title">Chưa có nhật ký hoạt động nào</div>
+                      <div className="empty-state-desc">
+                        Khi bắt đầu tác vụ Seeding hoặc mở Chrome, các sự kiện real-time sẽ hiển thị ở đây.
+                      </div>
+                    </div>
+                  ) : (
+                    logs.map((log) => (
+                      <div key={log.id} className="log-line">
+                        <span className="log-time">[{log.timestamp}]</span>
+                        <span className={`log-tag ${log.level}`}>{log.level}</span>
+                        {log.accountUsername && (
+                          <span className="log-user">[@{log.accountUsername}]:</span>
+                        )}
+                        <span className="log-msg">{log.message}</span>
+                      </div>
+                    ))
+                  )}
+                </div>
+              </div>
+            </div>
+          )}
+        </main>
       </div>
 
-      {/* MODAL 1: BATCH IMPORT ACCOUNTS */}
+      {/* =========================================================================
+          MODAL 1: BATCH IMPORT ACCOUNTS
+          ========================================================================= */}
       {isBatchImportOpen && (
-        <div className="modal-backdrop" onClick={e => { if (e.target === e.currentTarget) setIsBatchImportOpen(false); }}>
-          <div className="modal-content" onClick={e => e.stopPropagation()}>
+        <div
+          className="modal-backdrop"
+          onClick={(e) => {
+            if (e.target === e.currentTarget) setIsBatchImportOpen(false);
+          }}
+        >
+          <div className="modal-content" onClick={(e) => e.stopPropagation()}>
             <div className="modal-header">
-              <h3 className="modal-title">📥 Nhập Tài Khoản Hàng Loạt</h3>
+              <h3 className="modal-title">
+                <IconUpload size={18} />
+                Nhập Tài Khoản Hàng Loạt
+              </h3>
               <button className="modal-close" onClick={() => setIsBatchImportOpen(false)}>
                 ✕
               </button>
             </div>
 
-            <form onSubmit={handleBatchImport} style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
+            <form
+              onSubmit={handleBatchImport}
+              style={{ display: 'flex', flexDirection: 'column', gap: '0.85rem' }}
+            >
               <div className="input-group">
                 <label className="input-label">Định dạng hỗ trợ tự động:</label>
-                <div style={{ fontSize: '0.8rem', color: 'var(--text-muted)', background: 'rgba(0,0,0,0.3)', padding: '0.6rem', borderRadius: '8px', fontFamily: 'var(--font-mono)' }}>
-                  User<br />
-                  User|Pass<br />
-                  User|Pass|2FA<br />
-                  User|Pass|Cookie<br />
-                  User|Pass|2FA|Proxy<br />
-                  User|Pass|Cookie|Proxy<br />
-                  User|Pass|Cookie|Email|PassMail<br />
-                  User|Pass|Cookie|Email|PassMail|2FA<br />
+                <div
+                  style={{
+                    fontSize: '0.75rem',
+                    color: 'var(--text-muted)',
+                    background: 'var(--bg-surface-subtle)',
+                    border: '1px solid var(--border-color)',
+                    padding: '0.5rem 0.75rem',
+                    borderRadius: 'var(--radius-sm)',
+                    fontFamily: 'var(--font-mono)',
+                    lineHeight: 1.5,
+                  }}
+                >
+                  User | User|Pass | User|Pass|2FA | User|Pass|Cookie | User|Pass|Cookie|Proxy |
                   User|Pass|Cookie|Email|PassMail|2FA|Proxy
-
-
                 </div>
               </div>
 
               <div className="input-group">
-                <label className="input-label">Dán danh sách dữ liệu (mỗi dòng 1 tài khoản):</label>
+                <label className="input-label">
+                  <span>Dán danh sách dữ liệu (mỗi dòng 1 tài khoản):</span>
+                </label>
                 <textarea
                   ref={batchImportTextareaRef}
                   className="textarea-custom"
                   rows={6}
                   placeholder={`user_01|pass123|sessionid=abc;...|1.2.3.4:8080\nuser_02|pass456|sessionid=def;...|5.6.7.8:8080`}
                   value={batchRawText}
-                  onChange={e => setBatchRawText(e.target.value)}
+                  onChange={(e) => setBatchRawText(e.target.value)}
                   autoFocus
                   required
                 ></textarea>
               </div>
 
-
-              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '1rem' }}>
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.75rem' }}>
                 <div className="input-group">
                   <label className="input-label">Lưu vào nhóm:</label>
                   <select
                     className="custom-input"
                     value={batchCategory}
-                    onChange={e => setBatchCategory(e.target.value)}
+                    onChange={(e) => setBatchCategory(e.target.value)}
                   >
-                    {categories.map(c => (
+                    {categories.map((c) => (
                       <option key={c.id} value={c.id}>
                         {c.name}
                       </option>
@@ -1477,11 +1746,11 @@ export default function App() {
                 </div>
 
                 <div className="input-group">
-                  <label className="input-label">Loại Proxy:</label>
+                  <label className="input-label">Loại Proxy mặc định:</label>
                   <select
                     className="custom-input"
                     value={batchProxyType}
-                    onChange={e => setBatchProxyType(e.target.value as any)}
+                    onChange={(e) => setBatchProxyType(e.target.value as any)}
                   >
                     <option value="http">HTTP Proxy</option>
                     <option value="socks5">SOCKS5 Proxy</option>
@@ -1489,12 +1758,17 @@ export default function App() {
                 </div>
               </div>
 
-              <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '0.8rem', marginTop: '0.5rem' }}>
-                <button type="button" className="btn-secondary" onClick={() => setIsBatchImportOpen(false)}>
+              <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '0.6rem', marginTop: '0.4rem' }}>
+                <button
+                  type="button"
+                  className="btn btn-secondary"
+                  onClick={() => setIsBatchImportOpen(false)}
+                >
                   Hủy Bỏ
                 </button>
-                <button type="submit" className="btn-primary">
-                  Bắt Đầu Nhập Dữ Liệu
+                <button type="submit" className="btn btn-primary">
+                  <IconUpload size={14} />
+                  <span>Bắt Đầu Nhập Dữ Liệu</span>
                 </button>
               </div>
             </form>
@@ -1502,34 +1776,46 @@ export default function App() {
         </div>
       )}
 
-      {/* MODAL 2: SINGLE ADD ACCOUNT */}
+      {/* =========================================================================
+          MODAL 2: SINGLE ADD ACCOUNT
+          ========================================================================= */}
       {isSingleAddOpen && (
-        <div className="modal-backdrop" onClick={e => { if (e.target === e.currentTarget) setIsSingleAddOpen(false); }}>
-          <div className="modal-content" onClick={e => e.stopPropagation()}>
+        <div
+          className="modal-backdrop"
+          onClick={(e) => {
+            if (e.target === e.currentTarget) setIsSingleAddOpen(false);
+          }}
+        >
+          <div className="modal-content" onClick={(e) => e.stopPropagation()}>
             <div className="modal-header">
-              <h3 className="modal-title">➕ Thêm Tài Khoản Lẻ</h3>
+              <h3 className="modal-title">
+                <IconPlus size={18} />
+                Thêm Tài Khoản Lẻ
+              </h3>
               <button className="modal-close" onClick={() => setIsSingleAddOpen(false)}>
                 ✕
               </button>
             </div>
 
-            <form onSubmit={handleSingleAddAccount} style={{ display: 'flex', flexDirection: 'column', gap: '0.9rem' }}>
+            <form
+              onSubmit={handleSingleAddAccount}
+              style={{ display: 'flex', flexDirection: 'column', gap: '0.75rem' }}
+            >
               <div className="input-group">
-                <label className="input-label">Username TikTok:</label>
+                <label className="input-label">Username TikTok (Bắt buộc):</label>
                 <input
                   ref={singleAddInputRef}
                   type="text"
                   className="custom-input"
                   placeholder="Username (vd: user_test)"
                   value={newUsername}
-                  onChange={e => setNewUsername(e.target.value)}
+                  onChange={(e) => setNewUsername(e.target.value)}
                   autoFocus
                   required
                 />
               </div>
 
-
-              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.8rem' }}>
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.75rem' }}>
                 <div className="input-group">
                   <label className="input-label">Mật Khẩu (Tùy chọn):</label>
                   <input
@@ -1537,7 +1823,7 @@ export default function App() {
                     className="custom-input"
                     placeholder="Mật khẩu"
                     value={newPassword}
-                    onChange={e => setNewPassword(e.target.value)}
+                    onChange={(e) => setNewPassword(e.target.value)}
                   />
                 </div>
                 <div className="input-group">
@@ -1545,9 +1831,9 @@ export default function App() {
                   <select
                     className="custom-input"
                     value={newCategoryId}
-                    onChange={e => setNewCategoryId(e.target.value)}
+                    onChange={(e) => setNewCategoryId(e.target.value)}
                   >
-                    {categories.map(c => (
+                    {categories.map((c) => (
                       <option key={c.id} value={c.id}>
                         {c.name}
                       </option>
@@ -1556,7 +1842,7 @@ export default function App() {
                 </div>
               </div>
 
-              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.8rem' }}>
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.75rem' }}>
                 <div className="input-group">
                   <label className="input-label">Email Hòm Thư (Tùy chọn):</label>
                   <input
@@ -1564,7 +1850,7 @@ export default function App() {
                     className="custom-input"
                     placeholder="user@hotmail.com"
                     value={newEmail}
-                    onChange={e => setNewEmail(e.target.value)}
+                    onChange={(e) => setNewEmail(e.target.value)}
                   />
                 </div>
                 <div className="input-group">
@@ -1574,32 +1860,30 @@ export default function App() {
                     className="custom-input"
                     placeholder="Mật khẩu email"
                     value={newPassMail}
-                    onChange={e => setNewPassMail(e.target.value)}
+                    onChange={(e) => setNewPassMail(e.target.value)}
                   />
                 </div>
               </div>
 
-
               <div className="input-group">
-                <label className="input-label">Khóa 2FA Secret Key (Tự động sinh OTP 6 số):</label>
+                <label className="input-label">Khóa 2FA Secret Key (Tự động tính mã TOTP 6 số):</label>
                 <input
                   type="text"
                   className="custom-input"
                   placeholder="JBSWY3DPEHPK3PXP..."
                   value={newTwoFactor}
-                  onChange={e => setNewTwoFactor(e.target.value)}
+                  onChange={(e) => setNewTwoFactor(e.target.value)}
                 />
               </div>
 
               <div className="input-group">
                 <label className="input-label">Cookie String (Tùy chọn):</label>
-
                 <input
                   type="text"
                   className="custom-input"
                   placeholder="sessionid=...; sid_tt=..."
                   value={newCookie}
-                  onChange={e => setNewCookie(e.target.value)}
+                  onChange={(e) => setNewCookie(e.target.value)}
                 />
               </div>
 
@@ -1610,7 +1894,7 @@ export default function App() {
                   className="custom-input"
                   placeholder="1.2.3.4:8080"
                   value={newProxy}
-                  onChange={e => setNewProxy(e.target.value)}
+                  onChange={(e) => setNewProxy(e.target.value)}
                 />
               </div>
 
@@ -1619,18 +1903,23 @@ export default function App() {
                 <input
                   type="text"
                   className="custom-input"
-                  placeholder="Ghi chú thêm"
+                  placeholder="Ghi chú thêm..."
                   value={newNotes}
-                  onChange={e => setNewNotes(e.target.value)}
+                  onChange={(e) => setNewNotes(e.target.value)}
                 />
               </div>
 
-              <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '0.8rem', marginTop: '0.5rem' }}>
-                <button type="button" className="btn-secondary" onClick={() => setIsSingleAddOpen(false)}>
+              <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '0.6rem', marginTop: '0.4rem' }}>
+                <button
+                  type="button"
+                  className="btn btn-secondary"
+                  onClick={() => setIsSingleAddOpen(false)}
+                >
                   Hủy
                 </button>
-                <button type="submit" className="btn-primary">
-                  Lưu Tài Khoản
+                <button type="submit" className="btn btn-primary">
+                  <IconPlus size={14} />
+                  <span>Lưu Tài Khoản</span>
                 </button>
               </div>
             </form>
@@ -1638,38 +1927,56 @@ export default function App() {
         </div>
       )}
 
-      {/* MODAL 3: ADD CATEGORY */}
+      {/* =========================================================================
+          MODAL 3: ADD CATEGORY
+          ========================================================================= */}
       {isAddCategoryOpen && (
-        <div className="modal-backdrop" onClick={e => { if (e.target === e.currentTarget) setIsAddCategoryOpen(false); }}>
-          <div className="modal-content" style={{ maxWidth: '400px' }} onClick={e => e.stopPropagation()}>
+        <div
+          className="modal-backdrop"
+          onClick={(e) => {
+            if (e.target === e.currentTarget) setIsAddCategoryOpen(false);
+          }}
+        >
+          <div className="modal-content" style={{ maxWidth: '380px' }} onClick={(e) => e.stopPropagation()}>
             <div className="modal-header">
-              <h3 className="modal-title">📁 Thêm Nhóm Mới</h3>
+              <h3 className="modal-title">
+                <IconFolder size={18} />
+                Thêm Nhóm Mới
+              </h3>
               <button className="modal-close" onClick={() => setIsAddCategoryOpen(false)}>
                 ✕
               </button>
             </div>
 
-            <form onSubmit={handleAddCategory} style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
+            <form
+              onSubmit={handleAddCategory}
+              style={{ display: 'flex', flexDirection: 'column', gap: '0.85rem' }}
+            >
               <div className="input-group">
                 <label className="input-label">Tên Nhóm / Danh Mục:</label>
                 <input
                   ref={addCategoryInputRef}
                   type="text"
                   className="custom-input"
-                  placeholder="VD: Nick Nuôi VIP"
+                  placeholder="VD: Nick Nuôi VIP..."
                   value={newCategoryName}
-                  onChange={e => setNewCategoryName(e.target.value)}
+                  onChange={(e) => setNewCategoryName(e.target.value)}
                   autoFocus
                   required
                 />
               </div>
 
-              <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '0.8rem' }}>
-                <button type="button" className="btn-secondary" onClick={() => setIsAddCategoryOpen(false)}>
+              <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '0.6rem' }}>
+                <button
+                  type="button"
+                  className="btn btn-secondary"
+                  onClick={() => setIsAddCategoryOpen(false)}
+                >
                   Hủy
                 </button>
-                <button type="submit" className="btn-primary">
-                  Tạo Nhóm
+                <button type="submit" className="btn btn-primary">
+                  <IconPlus size={14} />
+                  <span>Tạo Nhóm</span>
                 </button>
               </div>
             </form>

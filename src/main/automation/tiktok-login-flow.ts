@@ -6,39 +6,51 @@ import { AccountInfo, AccountStatus } from './types';
 import { AccountSessionUpdate, persistTikTokSessionCookies } from './session-profile';
 import {
   clearTikTokAuthCookies,
+  clearTikTokRenderCache,
   detectTikTokLoggedOutState,
   loadTikTokUrlForSeeding,
 } from './tiktok-page';
 import { solveTikTokWebCaptchaWithOmo } from './captcha-solver';
+import { performZoomAwareElectronClick } from './browser-control';
 
 const mailOtpService = new MailOtpService();
 
-export async function ensureAuthenticatedForSeeding(
+/**
+ * Auto-Renew TikTok Session & Cookies by resetting auth/cache, logging in again, and reloading target
+ */
+export async function renewTikTokSessionForSeeding(
   win: BrowserWindow,
   customSession: Electron.Session,
-  acc: AccountInfo,
+  acc: AccountInfo & { proxy?: string; proxyType?: string },
   targetUrl: string,
   onLog: (log: Omit<TaskLogItem, 'id' | 'timestamp'>) => void,
   onAccountStatusChange: (id: string, status: AccountStatus) => void,
-  onAccountSessionUpdate: (id: string, update: AccountSessionUpdate) => void
+  onAccountSessionUpdate: (id: string, update: AccountSessionUpdate) => void,
+  triggerReason: string = 'Session/Cookie stale hoặc trang TikTok không lên'
 ): Promise<boolean> {
-  const loggedOutState = await detectTikTokLoggedOutState(win);
-  if (!loggedOutState.loggedOut) return true;
-
-  onAccountStatusChange(acc.id, 'unauthenticated');
   onLog({
     accountId: acc.id,
     accountUsername: acc.username,
-    level: 'warning',
-    message: `[Auth] @${acc.username} bi out session khi seeding: ${loggedOutState.reason || 'TikTok hien trang thai chua dang nhap.'}`,
+    level: 'info',
+    message: `[RenewSession] Bắt đầu renew cookie/session cho @${acc.username} (Lý do: ${triggerReason})...`,
   });
 
+  if (acc.proxy) {
+    onLog({
+      accountId: acc.id,
+      accountUsername: acc.username,
+      level: 'info',
+      message: `[RenewSession] Thông tin proxy đang dùng: ${acc.proxy} [${acc.proxyType || 'http'}]`,
+    });
+  }
+
   if (!acc.password) {
+    onAccountStatusChange(acc.id, 'unauthenticated');
     onLog({
       accountId: acc.id,
       accountUsername: acc.username,
       level: 'warning',
-      message: `[Auth] @${acc.username} chua co mat khau trong app nen khong the tu login lai. Vui long mo Chrome/Login thu cong de lay session moi.`,
+      message: `[RenewSession] @${acc.username} chưa có mật khẩu trong app nên không thể tự động renew session. Vui lòng mở Chrome/Login thủ công để lấy session mới.`,
     });
     return false;
   }
@@ -47,10 +59,19 @@ export async function ensureAuthenticatedForSeeding(
     accountId: acc.id,
     accountUsername: acc.username,
     level: 'info',
-    message: `[Auth] Dang tu login lai cho @${acc.username} truoc khi tiep tuc seeding...`,
+    message: `[RenewSession] Đang clear auth cookies và cache/service worker cho @${acc.username}...`,
   });
 
   await clearTikTokAuthCookies(customSession).catch(() => undefined);
+  await clearTikTokRenderCache(customSession).catch(() => undefined);
+
+  onLog({
+    accountId: acc.id,
+    accountUsername: acc.username,
+    level: 'info',
+    message: `[RenewSession] Đang tải trang đăng nhập TikTok cho @${acc.username}...`,
+  });
+
   await win.loadURL('https://www.tiktok.com/login/phone-or-email/email').catch((err: any) => {
     const errMsg = err?.message || String(err);
     if (!errMsg.includes('ERR_ABORTED') && err?.code !== 'ERR_ABORTED' && err?.errno !== -3) {
@@ -73,20 +94,74 @@ export async function ensureAuthenticatedForSeeding(
       accountId: acc.id,
       accountUsername: acc.username,
       level: 'error',
-      message: `[Auth] Login lai that bai cho @${acc.username}: ${loginResult?.status || 'unknown'}. Bo qua tai khoan nay.`,
+      message: `[RenewSession] Auto-login để renew session thất bại cho @${acc.username}: ${loginResult?.status || 'quá trình login không hoàn tất'}.`,
     });
     return false;
+  }
+
+  // Persist the newly obtained session cookies immediately
+  const savedCookie = await persistTikTokSessionCookies(
+    acc.id,
+    acc.username,
+    customSession,
+    onLog,
+    onAccountSessionUpdate,
+    '[RenewSession] '
+  );
+
+  if (!savedCookie) {
+    onAccountStatusChange(acc.id, 'authenticated');
   }
 
   onLog({
     accountId: acc.id,
     accountUsername: acc.username,
     level: 'success',
-    message: `[Auth] Login lai thanh cong cho @${acc.username}. Dang tai lai URL seeding...`,
+    message: `[RenewSession] ✅ Đã renew và lưu session cookie mới thành công cho @${acc.username}!`,
+  });
+
+  onLog({
+    accountId: acc.id,
+    accountUsername: acc.username,
+    level: 'info',
+    message: `[RenewSession] Đang tải lại target URL (${targetUrl}) cho @${acc.username}...`,
   });
 
   await loadTikTokUrlForSeeding(win, customSession, targetUrl, acc, onLog);
   return true;
+}
+
+export async function ensureAuthenticatedForSeeding(
+  win: BrowserWindow,
+  customSession: Electron.Session,
+  acc: AccountInfo & { proxy?: string; proxyType?: string },
+  targetUrl: string,
+  onLog: (log: Omit<TaskLogItem, 'id' | 'timestamp'>) => void,
+  onAccountStatusChange: (id: string, status: AccountStatus) => void,
+  onAccountSessionUpdate: (id: string, update: AccountSessionUpdate) => void
+): Promise<boolean> {
+  const loggedOutState = await detectTikTokLoggedOutState(win);
+  if (!loggedOutState.loggedOut) return true;
+
+  onAccountStatusChange(acc.id, 'unauthenticated');
+  const reason = loggedOutState.reason || 'TikTok hiển thị trạng thái chưa đăng nhập.';
+  onLog({
+    accountId: acc.id,
+    accountUsername: acc.username,
+    level: 'warning',
+    message: `[Auth] @${acc.username} bị out session khi seeding: ${reason}`,
+  });
+
+  return renewTikTokSessionForSeeding(
+    win,
+    customSession,
+    acc,
+    targetUrl,
+    onLog,
+    onAccountStatusChange,
+    onAccountSessionUpdate,
+    reason
+  );
 }
 
 /**
@@ -96,12 +171,19 @@ export async function autoFillTikTokLogin(win: BrowserWindow, usernameOrEmail: s
   if (!usernameOrEmail || !password || win.isDestroyed()) return false;
 
   try {
-    await new Promise(r => setTimeout(r, 1500));
+    await new Promise(r => setTimeout(r, 1200));
     if (win.isDestroyed()) return false;
 
-    const filled = await win.webContents.executeJavaScript(`
+    const fillResult = await win.webContents.executeJavaScript(`
       (async () => {
         try {
+          const isVisible = (el) => {
+            if (!el) return false;
+            const rect = el.getBoundingClientRect();
+            const style = window.getComputedStyle(el);
+            return rect.width > 0 && rect.height > 0 && style.visibility !== 'hidden' && style.display !== 'none' && style.opacity !== '0';
+          };
+
           const setReactInputValue = (inputEl, val) => {
             const nativeSetter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value')?.set;
             if (nativeSetter) {
@@ -114,32 +196,85 @@ export async function autoFillTikTokLogin(win: BrowserWindow, usernameOrEmail: s
             inputEl.dispatchEvent(new Event('blur', { bubbles: true }));
           };
 
-          const emailInput = document.querySelector('input[name="username"]') ||
-                             document.querySelector('input[placeholder*="Email" i]') ||
-                             document.querySelector('input[placeholder*="phone" i]') ||
-                             document.querySelector('input[type="text"]');
+          // If on Phone tab, try to click "Log in with email or username" switch link
+          const switchLink = Array.from(document.querySelectorAll('a, button, [role="button"], span, div, p')).find(el => {
+            if (!isVisible(el)) return false;
+            const txt = (el.innerText || el.textContent || '').trim().toLowerCase();
+            return txt.includes('log in with email') ||
+                   txt.includes('email or username') ||
+                   txt.includes('đăng nhập bằng email') ||
+                   txt.includes('dang nhap bang email') ||
+                   txt.includes('email / tên người dùng') ||
+                   txt.includes('email / ten nguoi dung');
+          });
 
-          const passInput = document.querySelector('input[type="password"]');
-
-          if (emailInput && passInput) {
-            emailInput.focus();
-            setReactInputValue(emailInput, ${JSON.stringify(usernameOrEmail)});
-
-            await new Promise(r => setTimeout(r, 400));
-
-            passInput.focus();
-            setReactInputValue(passInput, ${JSON.stringify(password)});
-
+          if (switchLink) {
+            switchLink.click?.();
             await new Promise(r => setTimeout(r, 600));
+          }
 
-            const isVisible = (el) => {
-              const rect = el.getBoundingClientRect();
-              const style = window.getComputedStyle(el);
-              return rect.width > 0 && rect.height > 0 && style.visibility !== 'hidden' && style.display !== 'none';
-            };
+          const findInputs = () => {
+            const emailSelectors = [
+              'input[name="username"]',
+              'input[autocomplete="username"]',
+              'input[placeholder*="Email" i]',
+              'input[placeholder*="username" i]',
+              'input[placeholder*="phone" i]',
+              'input[placeholder*="tên người dùng" i]',
+              'input[type="text"]',
+              'input:not([type="password"]):not([type="hidden"]):not([type="checkbox"])'
+            ];
+            const passSelectors = [
+              'input[type="password"]',
+              'input[name="password"]',
+              'input[autocomplete="current-password"]',
+              'input[placeholder*="Password" i]',
+              'input[placeholder*="Mật khẩu" i]'
+            ];
 
-            const submitBtn = Array.from(document.querySelectorAll('button, [role="button"]')).find(btn => {
-              if (!isVisible(btn) || btn.disabled || btn.getAttribute('aria-disabled') === 'true') return false;
+            let emailEl = null;
+            for (const sel of emailSelectors) {
+              const el = Array.from(document.querySelectorAll(sel)).find(isVisible);
+              if (el && el.type !== 'password') {
+                emailEl = el;
+                break;
+              }
+            }
+
+            let passEl = null;
+            for (const sel of passSelectors) {
+              const el = Array.from(document.querySelectorAll(sel)).find(isVisible);
+              if (el) {
+                passEl = el;
+                break;
+              }
+            }
+
+            return { emailEl, passEl };
+          };
+
+          let { emailEl, passEl } = findInputs();
+
+          if (!emailEl || !passEl) {
+            await new Promise(r => setTimeout(r, 600));
+            const retry = findInputs();
+            emailEl = retry.emailEl;
+            passEl = retry.passEl;
+          }
+
+          if (emailEl && passEl) {
+            emailEl.focus();
+            setReactInputValue(emailEl, ${JSON.stringify(usernameOrEmail)});
+
+            await new Promise(r => setTimeout(r, 300));
+
+            passEl.focus();
+            setReactInputValue(passEl, ${JSON.stringify(password)});
+
+            await new Promise(r => setTimeout(r, 500));
+
+            const submitBtn = Array.from(document.querySelectorAll('button, [role="button"], input[type="submit"]')).find(btn => {
+              if (!isVisible(btn)) return false;
               const txt = (btn.innerText || btn.textContent || btn.getAttribute('aria-label') || '').trim().toLowerCase();
               const e2e = (btn.getAttribute('data-e2e') || '').toLowerCase();
               return btn.type === 'submit' ||
@@ -156,25 +291,29 @@ export async function autoFillTikTokLogin(win: BrowserWindow, usernameOrEmail: s
               submitBtn.disabled = false;
               submitBtn.classList.remove('disabled');
               submitBtn.click();
-              return true;
+              return { success: true, submitted: true };
             }
+
+            return { success: true, submitted: false };
           }
-          return false;
+
+          return { success: false, reason: 'Inputs not found' };
         } catch(e) {
-          return false;
+          return { success: false, error: String(e) };
         }
       })();
     `);
 
-    if (filled) {
+    if (fillResult?.success) {
       await new Promise(r => setTimeout(r, 400));
       if (!win.isDestroyed()) {
         win.webContents.sendInputEvent({ type: 'keyDown', keyCode: 'Enter' });
         win.webContents.sendInputEvent({ type: 'keyUp', keyCode: 'Enter' });
       }
+      return true;
     }
 
-    return filled;
+    return false;
   } catch (err) {
     console.error('[Auto-Fill Login Error]:', err);
     return false;
@@ -284,7 +423,7 @@ export async function monitorLoginFlow(
   onAccountSessionUpdate: (id: string, update: AccountSessionUpdate) => void
 ): Promise<{ success: boolean; status: string }> {
   const maxMonitorMs = 90000; // 90 seconds monitoring
-  const pollIntervalMs = 3000; // Poll every 3s
+  const pollIntervalMs = 2500; // Poll every 2.5s
   const startTime = Date.now();
 
   let hasWarnedCaptcha = false;
@@ -295,6 +434,8 @@ export async function monitorLoginFlow(
   let hasFilledEmailOtp = false;
   let requestedOtpTimestamp = 0;
   let isSolvingCaptcha = false;
+  let modalClickAttempts = 0;
+  let hasTriedDirectEmailUrlFallback = false;
 
   onLog({
     accountId: acc.id,
@@ -307,63 +448,53 @@ export async function monitorLoginFlow(
     if (win.isDestroyed()) break;
 
     try {
-      // 1. STRICT SESSION COOKIE CHECK FOR AUTHENTICATED STATUS
+      // 1. Check Cookies
       const cookies = await customSession.cookies.get({ domain: '.tiktok.com' });
       const hasSessionCookie = cookies.some(
         c => c.name === 'sessionid' || c.name === 'sessionid_ss' || c.name === 'sid_tt'
       );
 
-      // DOM State Check
+      // 2. DOM State Check
       const pageState = await win.webContents.executeJavaScript(`
         (() => {
           try {
             const url = window.location.href;
-            const bodyText = document.body.innerText || '';
+            const bodyText = document.body?.innerText || '';
+            const lowerText = bodyText.toLowerCase();
 
-            // STRICT Logged-In DOM Indicators (User Profile Avatar Menu / Logout Button)
-            // DO NOT match generic a[href*="/@"]
-            const hasUserMenu = !!document.querySelector('[data-e2e="profile-icon"]') &&
-                                (!!document.querySelector('ul[class*="UserMenu"]') || !!document.querySelector('[aria-label*="Profile"]'));
-            const hasLogoutBtn = bodyText.includes('Log out') || bodyText.includes('Đăng xuất');
+            const isVisible = (el) => {
+              if (!el) return false;
+              const rect = el.getBoundingClientRect();
+              const style = window.getComputedStyle(el);
+              return rect.width > 0 && rect.height > 0 && style.visibility !== 'hidden' && style.display !== 'none' && style.opacity !== '0';
+            };
 
-            // Captcha / Challenge Indicators
+            const hasUserMenu = (!!document.querySelector('[data-e2e="profile-icon"]') || !!document.querySelector('[aria-label*="Profile" i]')) &&
+                                (!!document.querySelector('ul[class*="UserMenu"]') || lowerText.includes('log out') || lowerText.includes('đăng xuất'));
+            const hasLogoutBtn = lowerText.includes('log out') || lowerText.includes('đăng xuất');
+
             const hasCaptcha = !!document.querySelector('iframe[src*="captcha"]') ||
                                !!document.querySelector('iframe[src*="sec"]') ||
                                !!document.querySelector('#captcha-verify-container') ||
                                !!document.querySelector('.sec-captcha-container') ||
-                               bodyText.includes('Drag the slider') ||
-                               bodyText.includes('Select 2 objects') ||
-                               bodyText.includes('Rotate the image') ||
-                               bodyText.includes('Complete the puzzle') ||
-                               bodyText.includes('Verify to continue');
+                               lowerText.includes('drag the slider') ||
+                               lowerText.includes('select 2 objects') ||
+                               lowerText.includes('rotate the image') ||
+                               lowerText.includes('complete the puzzle') ||
+                               lowerText.includes('verify to continue');
 
-            // Precise 2FA TOTP Indicators
             const is2FA = !hasCaptcha && (
-              bodyText.includes('2-step verification') ||
-              bodyText.includes('Authenticator app') ||
-              bodyText.includes('Enter 6-digit code') ||
-              bodyText.includes('Security code') ||
-              bodyText.includes('Enter the code from authenticator app')
+              lowerText.includes('2-step verification') ||
+              lowerText.includes('authenticator app') ||
+              lowerText.includes('enter 6-digit code') ||
+              lowerText.includes('security code') ||
+              lowerText.includes('enter the code from authenticator app')
             );
 
-            // Email Checkpoint: Option Selection Screen vs 6-Digit Code Input Screen
             const isEmailCheckpoint = !hasCaptcha && !is2FA && (
-              bodyText.includes("Verify it's really you") ||
-              bodyText.includes("Xác minh đó là bạn")
+              lowerText.includes("verify it's really you") ||
+              lowerText.includes("xác minh đó là bạn")
             );
-
-            // Check if 6-digit inputs are active on screen for Email OTP
-            const hasDigitInputs = Array.from(document.querySelectorAll('input[type="number"], input[type="text"], input[class*="Digit"]')).length >= 1;
-
-            const isEmailCodeInputScreen = isEmailCheckpoint && (hasDigitInputs || bodyText.includes('Enter code') || bodyText.includes('sent to email'));
-            const isEmailOptionSelectionScreen = isEmailCheckpoint && !isEmailCodeInputScreen;
-
-            const lowerText = bodyText.toLowerCase();
-            const isVisible = (el) => {
-              const rect = el.getBoundingClientRect();
-              const style = window.getComputedStyle(el);
-              return rect.width > 0 && rect.height > 0 && style.visibility !== 'hidden' && style.display !== 'none';
-            };
 
             const visibleCodeInputs = Array.from(document.querySelectorAll('input[type="number"], input[type="text"], input[inputmode="numeric"], input[class*="Digit"]'))
               .filter(input => isVisible(input) && input.type !== 'password' && !input.disabled && !input.readOnly);
@@ -375,43 +506,34 @@ export async function monitorLoginFlow(
               return input.type === 'number' || inputMode === 'numeric' || autocomplete === 'one-time-code' || maxLength === 1;
             });
 
-            const hasEmailSignal = lowerText.includes('email') ||
-                                   lowerText.includes('mail') ||
-                                   lowerText.includes('@') ||
-                                   lowerText.includes('hòm thư') ||
-                                   lowerText.includes('thư điện tử');
+            const hasEmailSignal = lowerText.includes('email') || lowerText.includes('mail') || lowerText.includes('@') || lowerText.includes('hòm thư');
+            const hasEmailCodePrompt = lowerText.includes('enter code') || lowerText.includes('verification code') || lowerText.includes('6-digit') || lowerText.includes('sent to email') || lowerText.includes('mã xác minh');
 
-            const hasEmailCodePrompt = lowerText.includes('enter code') ||
-                                       lowerText.includes('enter the code') ||
-                                       lowerText.includes('verification code') ||
-                                       lowerText.includes('6-digit') ||
-                                       lowerText.includes('six-digit') ||
-                                       lowerText.includes('sent to email') ||
-                                       lowerText.includes('sent to your email') ||
-                                       lowerText.includes('code sent') ||
-                                       lowerText.includes('mã xác minh') ||
-                                       lowerText.includes('nhập mã') ||
-                                       lowerText.includes('gửi đến email') ||
-                                       lowerText.includes('gửi tới email');
-
-            const emailOptionCandidate = Array.from(document.querySelectorAll('button, [role="button"], div, span, p')).find(el => {
-              if (!isVisible(el)) return false;
-              const txt = (el.innerText || el.textContent || '').toLowerCase();
-              return (txt.includes('email') || txt.includes('@') || txt.includes('hòm thư')) &&
-                     !txt.includes('enter code') &&
-                     !txt.includes('verification code') &&
-                     !txt.includes('nhập mã');
-            });
+            const isEmailCodeInputScreen = isEmailCheckpoint && (visibleCodeInputs.length >= 1 || lowerText.includes('enter code') || lowerText.includes('sent to email'));
+            const isEmailOptionSelectionScreen = isEmailCheckpoint && !isEmailCodeInputScreen;
 
             const resolvedEmailCodeInputScreen = isEmailCodeInputScreen ||
               (!hasCaptcha && !is2FA && hasEmailSignal && hasEmailCodePrompt && (visibleCodeInputs.length >= 1 || hasSixSingleDigitInputs));
             const resolvedEmailOptionSelectionScreen = !resolvedEmailCodeInputScreen &&
-              (isEmailOptionSelectionScreen || ((isEmailCheckpoint || hasEmailSignal) && !!emailOptionCandidate));
+              (isEmailOptionSelectionScreen || ((isEmailCheckpoint || hasEmailSignal) && !hasEmailCodePrompt));
 
-            // Login Error Toast / Bad Credentials
-            const hasError = bodyText.includes('Maximum number of attempts reached') ||
-                             bodyText.includes('Incorrect password') ||
-                             bodyText.includes('User does not exist');
+            const hasError = lowerText.includes('maximum number of attempts reached') ||
+                             lowerText.includes('incorrect password') ||
+                             lowerText.includes('user does not exist') ||
+                             lowerText.includes('mật khẩu không đúng') ||
+                             lowerText.includes('tài khoản không tồn tại');
+
+            const hasLoginModal = lowerText.includes('log in to tiktok') ||
+                                  lowerText.includes('đăng nhập vào tiktok') ||
+                                  lowerText.includes('use phone or email') ||
+                                  lowerText.includes('use qr code') ||
+                                  lowerText.includes('continue with facebook') ||
+                                  lowerText.includes('continue with google') ||
+                                  lowerText.includes('continue with line');
+
+            const passInput = Array.from(document.querySelectorAll('input[type="password"]')).find(isVisible);
+            const emailInput = Array.from(document.querySelectorAll('input[name="username"], input[autocomplete="username"], input[placeholder*="Email" i], input[placeholder*="username" i]')).find(isVisible);
+            const hasLoginForm = !!passInput && !!emailInput;
 
             const visibleButtons = Array.from(document.querySelectorAll('button, a, [role="button"], [data-e2e]')).filter(isVisible);
             const hasLoginButton = visibleButtons.some(el => {
@@ -425,17 +547,11 @@ export async function monitorLoginFlow(
             });
             const hasLoginToComment = visibleButtons.some(el => {
               const txt = (el.innerText || el.textContent || el.getAttribute('aria-label') || '').trim().toLowerCase();
-              return txt.includes('log in to comment') ||
-                     txt.includes('login to comment') ||
-                     txt.includes('đăng nhập để bình luận') ||
-                     txt.includes('dang nhap de binh luan');
-            }) || lowerText.includes('log in to comment') || lowerText.includes('login to comment');
-            const isLoginScreen = hasLoginButton ||
-                                  hasLoginToComment ||
-                                  bodyText.includes('Log in to TikTok') ||
-                                  bodyText.includes('Use phone or email') ||
-                                  bodyText.includes('Đăng nhập vào TikTok') ||
-                                  bodyText.includes('Đăng nhập');
+              return txt.includes('log in to comment') || txt.includes('đăng nhập để bình luận');
+            }) || lowerText.includes('log in to comment');
+
+            const isLoginUrl = url.includes('/login');
+            const isLoginScreen = hasLoginModal || hasLoginForm || isLoginUrl || hasLoginButton || hasLoginToComment;
 
             return {
               hasUserMenu,
@@ -446,8 +562,11 @@ export async function monitorLoginFlow(
               isEmailCodeInputScreen: resolvedEmailCodeInputScreen,
               hasError,
               isLoginScreen,
+              hasLoginModal,
+              hasLoginForm,
               hasLoginButton,
-              hasLoginToComment
+              hasLoginToComment,
+              isLoginUrl
             };
           } catch(e) {
             return {
@@ -458,17 +577,23 @@ export async function monitorLoginFlow(
               isEmailOptionSelectionScreen: false,
               isEmailCodeInputScreen: false,
               hasError: false,
-              isLoginScreen: false,
+              isLoginScreen: true,
+              hasLoginModal: false,
+              hasLoginForm: false,
               hasLoginButton: false,
-              hasLoginToComment: false
+              hasLoginToComment: false,
+              isLoginUrl: false
             };
           }
         })();
       `);
 
       // A. STRICT LOGGED_IN CHECK
-      // A stale TikTok cookie can remain after the page has been logged out, so DOM logged-out signals win.
-      if ((hasSessionCookie && !pageState.isLoginScreen) || (pageState.hasUserMenu && pageState.hasLogoutBtn)) {
+      // If modal or login form or login URL is visible, DOM logged-out wins over old/stale cookie.
+      const isStrictlyAuthenticated = (!pageState.isLoginScreen && hasSessionCookie) ||
+                                     (!pageState.isLoginScreen && pageState.hasUserMenu && pageState.hasLogoutBtn);
+
+      if (isStrictlyAuthenticated) {
         const savedCookie = await persistTikTokSessionCookies(
           acc.id,
           acc.username,
@@ -488,7 +613,7 @@ export async function monitorLoginFlow(
         return { success: true, status: 'authenticated' };
       }
 
-      // B. CAPTCHA DETECTED -> Try OmoCaptcha, then wait/manual fallback.
+      // B. CAPTCHA DETECTED
       if (pageState.hasCaptcha) {
         if (!isSolvingCaptcha) {
           isSolvingCaptcha = true;
@@ -521,10 +646,10 @@ export async function monitorLoginFlow(
         await new Promise(r => setTimeout(r, pollIntervalMs));
         continue;
       } else {
-        hasWarnedCaptcha = false; // Reset if captcha solved
+        hasWarnedCaptcha = false;
       }
 
-      // C. PRECISE 2FA TOTP SCREEN DETECTED -> Only enter TOTP if strictly on 2FA screen
+      // C. 2FA TOTP SCREEN DETECTED
       if (pageState.is2FA && !hasFilledTotp) {
         if (acc.twoFactor && acc.twoFactor.trim().length >= 8) {
           const totpCode = generateTotpToken(acc.twoFactor);
@@ -536,8 +661,6 @@ export async function monitorLoginFlow(
               level: 'info',
               message: `🔑 Đã phát hiện màn hình 2FA! Đã tự động sinh mã TOTP 6 số [ ${totpCode} ]. Đang điền...`,
             });
-
-            // Fill TOTP using single safe strategy
             await fillSixDigitCodeSingleStrategy(win, totpCode);
           }
         } else {
@@ -547,11 +670,11 @@ export async function monitorLoginFlow(
             level: 'warning',
             message: `⚠️ Màn hình 2FA yêu cầu mã Authenticator nhưng tài khoản @${acc.username} chưa cài Khóa 2FA!`,
           });
-          hasFilledTotp = true; // Prevent log spam
+          hasFilledTotp = true;
         }
       }
 
-      // D. EMAIL OPTION SELECTION SCREEN -> Click Email card and wait for transition
+      // D. EMAIL OPTION SELECTION SCREEN
       if (pageState.isEmailOptionSelectionScreen && (!hasClickedEmailOption || Date.now() - emailOptionClickedAt > 10000)) {
         hasClickedEmailOption = true;
         emailOptionClickedAt = Date.now();
@@ -583,12 +706,11 @@ export async function monitorLoginFlow(
           })();
         `);
 
-        // Wait 2.5s for UI to transition to 6-digit code input screen
         await new Promise(r => setTimeout(r, 2500));
         continue;
       }
 
-      // E. EMAIL CODE INPUT SCREEN DETECTED -> Strictly fetch OTP ONLY when input screen is ready
+      // E. EMAIL CODE INPUT SCREEN DETECTED
       if (pageState.isEmailCodeInputScreen && !hasFilledEmailOtp) {
         if (acc.email && acc.passMail) {
           hasFilledEmailOtp = true;
@@ -601,7 +723,6 @@ export async function monitorLoginFlow(
             message: `📬 Màn hình nhập mã Email OTP đã sẵn sàng! Đang kết nối ngầm hòm thư ${acc.email} để bóc mã...`,
           });
 
-          // Fetch OTP with requestedAt timestamp
           const otpRes = await mailOtpService.fetchTikTokOtp(acc.email, acc.passMail, {
             sinceTimestamp: requestedOtpTimestamp - 30000,
             timeoutMs: 35000,
@@ -616,7 +737,6 @@ export async function monitorLoginFlow(
             });
 
             if (!win.isDestroyed()) {
-              // Fill Email OTP using single safe strategy
               await fillSixDigitCodeSingleStrategy(win, otpRes.otp);
             }
           } else {
@@ -634,96 +754,306 @@ export async function monitorLoginFlow(
             level: 'warning',
             message: `⚠️ Màn hình xác minh yêu cầu mã OTP Email nhưng tài khoản chưa nhập Email & PassMail!`,
           });
-          hasFilledEmailOtp = true; // Prevent log spam
+          hasFilledEmailOtp = true;
         }
       }
 
-      // F. UNAUTHENTICATED HOMEPAGE / LOGIN FORM DETECTED -> Click "Log in" button or trigger Auto-fill
-      if ((!hasSessionCookie || pageState.isLoginScreen || pageState.hasLoginButton || pageState.hasLoginToComment) && acc.password) {
-        const loginCheck = await win.webContents.executeJavaScript(`
+      // F. LOGIN MODAL / LOGIN FORM / UNLOGGED PAGE HANDLING
+      if (pageState.isLoginScreen && acc.password) {
+        // Fallback: If modal click tried 2+ times and still on modal, load direct URL
+        if (modalClickAttempts >= 2 && !hasTriedDirectEmailUrlFallback && !pageState.hasLoginForm) {
+          hasTriedDirectEmailUrlFallback = true;
+          onLog({
+            accountId: acc.id,
+            accountUsername: acc.username,
+            level: 'info',
+            message: `[LoginModal] Fallback load direct email login page https://www.tiktok.com/login/phone-or-email/email`,
+          });
+          await win.loadURL('https://www.tiktok.com/login/phone-or-email/email').catch(() => {});
+          await new Promise(r => setTimeout(r, 2500));
+          continue;
+        }
+
+        const modalAction = await win.webContents.executeJavaScript(`
           (() => {
             try {
+              const url = window.location.href;
+              const bodyText = document.body?.innerText || '';
+              const lowerText = bodyText.toLowerCase();
+
               const isVisible = (el) => {
+                if (!el) return false;
                 const rect = el.getBoundingClientRect();
                 const style = window.getComputedStyle(el);
-                return rect.width > 0 && rect.height > 0 && style.visibility !== 'hidden' && style.display !== 'none';
+                return rect.width > 0 && rect.height > 0 && style.visibility !== 'hidden' && style.display !== 'none' && style.opacity !== '0';
               };
 
-              const emailInput = document.querySelector('input[name="username"]') ||
-                                 document.querySelector('input[placeholder*="Email" i]') ||
-                                 document.querySelector('input[placeholder*="phone" i]') ||
-                                 document.querySelector('input[type="text"]');
-              const passInput = document.querySelector('input[type="password"]');
-
-              if (emailInput && passInput && isVisible(emailInput) && isVisible(passInput)) {
-                return 'FORM_READY';
+              // 1. Check if email/username and password inputs are already visible
+              const passInput = Array.from(document.querySelectorAll('input[type="password"]')).find(isVisible);
+              const emailInput = Array.from(document.querySelectorAll('input[name="username"], input[autocomplete="username"], input[placeholder*="Email" i], input[placeholder*="username" i], input[type="text"]')).find(isVisible);
+              if (passInput && emailInput) {
+                return { type: 'FORM_READY' };
               }
 
-              const clickCentered = (el) => {
-                const rect = el.getBoundingClientRect();
-                const target = document.elementFromPoint(rect.left + rect.width / 2, rect.top + rect.height / 2);
-                (target || el).click();
-              };
-
-              // Check for 'Use phone or email' option in Login Modal
-              const usePhoneEmailCard = Array.from(document.querySelectorAll('button, [role="button"], a, div')).find(el => {
+              // 2. Check if on Phone tab (has switch link "Log in with email or username")
+              const switchLink = Array.from(document.querySelectorAll('a, button, [role="button"], span, div, p')).find(el => {
                 if (!isVisible(el)) return false;
                 const txt = (el.innerText || el.textContent || '').trim().toLowerCase();
-                const exactMethod = txt === 'use phone or email' ||
-                       txt === 'use phone/email' ||
-                       txt === 'use phone or email or username' ||
-                       txt === 'use phone / email / username';
-                const containsMethod = txt.includes('use phone or email') ||
-                       txt.includes('use phone/email') ||
-                       txt.includes('use phone or email or username') ||
-                       txt.includes('use phone / email / username') ||
-                       txt.includes('sử dụng điện thoại / email / tên người dùng') ||
-                       txt.includes('sử dụng điện thoại') ||
-                       txt.includes('sử dụng email');
-                const rect = el.getBoundingClientRect();
-                return exactMethod || (containsMethod && rect.width <= 650 && rect.height <= 140);
+                return txt.includes('log in with email') ||
+                       txt.includes('email or username') ||
+                       txt.includes('đăng nhập bằng email') ||
+                       txt.includes('dang nhap bang email') ||
+                       txt.includes('email / tên người dùng') ||
+                       txt.includes('email / ten nguoi dung');
               });
-              if (usePhoneEmailCard) {
-                clickCentered(usePhoneEmailCard);
-                return 'CLICKED_MODAL_OPTION';
+
+              if (switchLink) {
+                const rect = switchLink.getBoundingClientRect();
+                switchLink.click?.();
+                return {
+                  type: 'SWITCH_TO_EMAIL_TAB',
+                  text: (switchLink.innerText || switchLink.textContent || '').trim(),
+                  x: Math.round(rect.left + rect.width / 2),
+                  y: Math.round(rect.top + rect.height / 2)
+                };
               }
 
-              // Check for Top "Log in" button on TikTok homepage
+              // 3. Collect visible option texts in modal for diagnostics
+              const visibleOptions = Array.from(document.querySelectorAll('button, [role="button"], a, div, li, span'))
+                .filter(isVisible)
+                .filter(el => {
+                  const rect = el.getBoundingClientRect();
+                  return rect.width >= 120 && rect.width <= 600 && rect.height >= 28 && rect.height <= 120;
+                })
+                .map(el => (el.innerText || el.textContent || '').trim())
+                .filter(txt => txt.length > 2 && txt.length < 80)
+                .filter((txt, idx, arr) => arr.indexOf(txt) === idx)
+                .slice(0, 10);
+
+              const isModalPresent = lowerText.includes('log in to tiktok') ||
+                                     lowerText.includes('đăng nhập vào tiktok') ||
+                                     lowerText.includes('use qr code') ||
+                                     lowerText.includes('use phone or email') ||
+                                     lowerText.includes('continue with facebook') ||
+                                     lowerText.includes('continue with google') ||
+                                     lowerText.includes('continue with line');
+
+              // 4. Search for "Use phone or email" option across all element tags
+              const allElements = Array.from(document.querySelectorAll('button, [role="button"], a, div, li, span, p')).filter(isVisible);
+
+              const matchesUsePhoneEmail = (raw) => {
+                const norm = (raw || '').replace(/\\s+/g, ' ').trim().toLowerCase();
+                if (!norm || norm === 'x' || norm === 'close' || norm.includes('sign up') || norm.includes('đăng ký')) return false;
+                if (norm.includes('terms of service') || norm.includes('privacy policy') || norm.includes('điều khoản')) return false;
+                return norm === 'use phone or email' ||
+                       norm === 'use phone/email' ||
+                       norm === 'use phone or email or username' ||
+                       norm === 'use phone / email / username' ||
+                       norm.includes('use phone or email') ||
+                       norm.includes('use phone/email') ||
+                       norm.includes('use phone or email or username') ||
+                       norm.includes('use phone / email / username') ||
+                       norm.includes('phone or email') ||
+                       norm.includes('phone / email') ||
+                       norm.includes('sử dụng điện thoại / email / tên người dùng') ||
+                       norm.includes('sử dụng điện thoại hoặc email') ||
+                       norm.includes('sử dụng số điện thoại / email / tên người dùng') ||
+                       norm.includes('sử dụng email') ||
+                       norm.includes('điện thoại / email / tên người dùng');
+              };
+
+              const matchedContainers = allElements
+                .filter(el => matchesUsePhoneEmail(el.innerText || el.textContent || el.getAttribute?.('aria-label')))
+                .map(el => {
+                  let container = el;
+                  let cur = el;
+                  for (let i = 0; i < 4 && cur; i++) {
+                    const cRect = cur.getBoundingClientRect();
+                    if (cRect.width >= 160 && cRect.height >= 32 && cRect.height <= 120) {
+                      container = cur;
+                      break;
+                    }
+                    cur = cur.parentElement;
+                  }
+                  const cRect = container.getBoundingClientRect();
+                  return {
+                    el: container,
+                    rect: cRect,
+                    text: (container.innerText || container.textContent || '').trim()
+                  };
+                })
+                .filter(({ rect }) => rect.width >= 100 && rect.height >= 24 && rect.height <= 140 && rect.left >= 0 && rect.top >= 0);
+
+              if (matchedContainers.length > 0) {
+                const target = matchedContainers[0];
+                target.el.scrollIntoView?.({ block: 'center', inline: 'center' });
+
+                const x = Math.round(target.rect.left + target.rect.width / 2);
+                const y = Math.round(target.rect.top + target.rect.height / 2);
+
+                const eventInit = {
+                  bubbles: true,
+                  cancelable: true,
+                  view: window,
+                  clientX: x,
+                  clientY: y,
+                  button: 0
+                };
+                ['pointerdown', 'mousedown', 'pointerup', 'mouseup', 'click'].forEach(eventName => {
+                  const EventCtor = eventName.startsWith('pointer') && window.PointerEvent ? PointerEvent : MouseEvent;
+                  target.el.dispatchEvent(new EventCtor(eventName, eventInit));
+                });
+                target.el.click?.();
+
+                return {
+                  type: 'CLICKED_USE_PHONE_EMAIL',
+                  text: target.text.slice(0, 100),
+                  x,
+                  y,
+                  visibleOptions,
+                  isModalPresent
+                };
+              }
+
+              // 5. Check Top login button on homepage
               const topLoginBtn = document.querySelector('[data-e2e="top-login-button"]') ||
-                                  document.querySelector('button[aria-label*="Log in" i]') ||
-                                  Array.from(document.querySelectorAll('button, a')).find(el => {
+                                  Array.from(document.querySelectorAll('button, a, [role="button"]')).find(el => {
                                     if (!isVisible(el)) return false;
                                     const txt = (el.innerText || el.textContent || '').trim().toLowerCase();
                                     return txt === 'log in' || txt === 'đăng nhập';
                                   });
-              if (topLoginBtn) {
-                topLoginBtn.click();
-                return 'CLICKED_TOP_LOGIN';
+              if (topLoginBtn && isVisible(topLoginBtn)) {
+                const rect = topLoginBtn.getBoundingClientRect();
+                topLoginBtn.click?.();
+                return {
+                  type: 'CLICKED_TOP_LOGIN',
+                  x: Math.round(rect.left + rect.width / 2),
+                  y: Math.round(rect.top + rect.height / 2),
+                  visibleOptions
+                };
               }
 
-              return 'NONE';
+              return {
+                type: isModalPresent ? 'MODAL_PRESENT_BUT_NO_OPTION_MATCH' : 'NONE',
+                isModalPresent,
+                visibleOptions,
+                bodyLength: bodyText.length,
+                url,
+                title: document.title
+              };
             } catch(e) {
-              return 'NONE';
+              return { type: 'ERROR', error: String(e) };
             }
           })();
         `);
 
-        if (loginCheck === 'FORM_READY' && !hasAutoFilled) {
-          hasAutoFilled = true;
+        if (modalAction.type === 'FORM_READY') {
+          if (!hasAutoFilled) {
+            hasAutoFilled = true;
+            onLog({
+              accountId: acc.id,
+              accountUsername: acc.username,
+              level: 'info',
+              message: `[LoginModal] Email/password form ready. Đang tự động điền thông tin đăng nhập cho @${acc.username}...`,
+            });
+            await autoFillTikTokLogin(win, acc.username, acc.password);
+          }
+        } else if (modalAction.type === 'SWITCH_TO_EMAIL_TAB') {
           onLog({
             accountId: acc.id,
             accountUsername: acc.username,
             level: 'info',
-            message: `🔑 Phát hiện ô đăng nhập trên TikTok! Đang tự động điền Username & Mật khẩu...`,
+            message: `[LoginModal] Đã click chuyển sang tab Email/Username ("${modalAction.text}"). Đang chờ form...`,
           });
+          if (modalAction.x && modalAction.y) {
+            await performZoomAwareElectronClick(win, modalAction.x, modalAction.y).catch(() => {});
+          }
+          await new Promise(r => setTimeout(r, 1200));
           await autoFillTikTokLogin(win, acc.username, acc.password);
-        } else if (loginCheck === 'CLICKED_TOP_LOGIN' || loginCheck === 'CLICKED_MODAL_OPTION') {
+        } else if (modalAction.type === 'CLICKED_USE_PHONE_EMAIL') {
+          modalClickAttempts++;
           onLog({
             accountId: acc.id,
             accountUsername: acc.username,
             level: 'info',
-            message: `🌐 Tài khoản chưa đăng nhập. Đang tự động bấm nút "Đăng nhập" trên TikTok...`,
+            message: `[LoginModal] Detected TikTok login modal. Clicked Use phone/email via DOM & coordinate (${modalAction.x}, ${modalAction.y}) [Option: "${modalAction.text}"]`,
           });
+
+          if (modalAction.x && modalAction.y) {
+            await performZoomAwareElectronClick(win, modalAction.x, modalAction.y).catch(() => {});
+          }
+
+          await new Promise(r => setTimeout(r, 2000));
+
+          // Inspect if form is ready after click
+          const checkAfterClick = await win.webContents.executeJavaScript(`
+            (() => {
+              try {
+                const isVisible = (el) => {
+                  if (!el) return false;
+                  const rect = el.getBoundingClientRect();
+                  const style = window.getComputedStyle(el);
+                  return rect.width > 0 && rect.height > 0 && style.visibility !== 'hidden' && style.display !== 'none';
+                };
+                const passInput = Array.from(document.querySelectorAll('input[type="password"]')).find(isVisible);
+                const emailInput = Array.from(document.querySelectorAll('input[name="username"], input[autocomplete="username"], input[placeholder*="Email" i], input[placeholder*="username" i], input[type="text"]')).find(isVisible);
+                const switchLink = Array.from(document.querySelectorAll('a, button, [role="button"], span, div, p')).find(el => {
+                  if (!isVisible(el)) return false;
+                  const txt = (el.innerText || el.textContent || '').trim().toLowerCase();
+                  return txt.includes('log in with email') || txt.includes('email or username') || txt.includes('đăng nhập bằng email');
+                });
+                return {
+                  formReady: !!passInput && !!emailInput,
+                  hasSwitchLink: !!switchLink,
+                  switchLinkText: switchLink ? (switchLink.innerText || switchLink.textContent || '').trim() : ''
+                };
+              } catch(e) { return { formReady: false, hasSwitchLink: false }; }
+            })();
+          `).catch(() => ({ formReady: false, hasSwitchLink: false }));
+
+          if (checkAfterClick.formReady) {
+            onLog({
+              accountId: acc.id,
+              accountUsername: acc.username,
+              level: 'info',
+              message: `[LoginModal] Email/password form ready. Đang điền form đăng nhập cho @${acc.username}...`,
+            });
+            await autoFillTikTokLogin(win, acc.username, acc.password);
+            hasAutoFilled = true;
+          } else if (checkAfterClick.hasSwitchLink) {
+            onLog({
+              accountId: acc.id,
+              accountUsername: acc.username,
+              level: 'info',
+              message: `[LoginModal] Đang ở tab Phone, bấm chuyển tab sang Email: "${checkAfterClick.switchLinkText}"...`,
+            });
+            await autoFillTikTokLogin(win, acc.username, acc.password);
+          } else {
+            onLog({
+              accountId: acc.id,
+              accountUsername: acc.username,
+              level: 'warning',
+              message: `[LoginModal] Use phone/email clicked nhưng form chưa sẵn sàng. [URL: ${modalAction.url || ''}] [Options: ${modalAction.visibleOptions?.join(', ')}]`,
+            });
+          }
+        } else if (modalAction.type === 'MODAL_PRESENT_BUT_NO_OPTION_MATCH') {
+          modalClickAttempts++;
+          onLog({
+            accountId: acc.id,
+            accountUsername: acc.username,
+            level: 'warning',
+            message: `[LoginModal] Failed to find Use phone/email option. [Options: ${modalAction.visibleOptions?.join(', ')}] [URL: ${modalAction.url}] [Title: "${modalAction.title}"] [BodyLen: ${modalAction.bodyLength}]`,
+          });
+        } else if (modalAction.type === 'CLICKED_TOP_LOGIN') {
+          onLog({
+            accountId: acc.id,
+            accountUsername: acc.username,
+            level: 'info',
+            message: `[LoginModal] Clicked top login button on homepage.`,
+          });
+          if (modalAction.x && modalAction.y) {
+            await performZoomAwareElectronClick(win, modalAction.x, modalAction.y).catch(() => {});
+          }
           await new Promise(r => setTimeout(r, 1500));
         }
       }
@@ -740,7 +1070,7 @@ export async function monitorLoginFlow(
       }
 
     } catch (err: any) {
-      // Ignore transient errors during navigation
+      // Ignore transient navigation errors
     }
 
     await new Promise(r => setTimeout(r, pollIntervalMs));

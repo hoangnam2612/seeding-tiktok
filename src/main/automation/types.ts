@@ -1,4 +1,11 @@
-export type AccountStatus = 'authenticated' | 'unauthenticated' | 'active' | 'error' | 'live' | 'die';
+export type AccountStatus =
+  | 'live'
+  | 'die'
+  | 'unauthenticated'
+  | 'authenticated'
+  | 'checkpoint'
+  | 'active'
+  | 'error';
 
 export type SeedingStateChange = {
   isRunning: boolean;

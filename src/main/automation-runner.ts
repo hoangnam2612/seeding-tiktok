@@ -133,19 +133,33 @@ export function setupAutomationIPC(
       const startUrl = !hasCookie && password
         ? 'https://www.tiktok.com/login/phone-or-email/email'
         : 'https://www.tiktok.com';
-      loadLoginStartPage(win, customSession, startUrl, { id: accountId, username }, proxy, proxyConfig, onLog, onAccountStatusChange, 'Mo Chrome')
-        .catch(err => console.error('[Proxy] Failed to diagnose login window load:', err));
-
 
       onLog({
         accountId,
         accountUsername: username,
         level: 'info',
-        message: `🌐 Đã mở Chrome Profile cho @${username || accountId} ${proxy ? '[Proxy Active]' : ''}${muteBrowserAudio !== false ? ' [Muted]' : ''}`,
+        message: `🌐 Đang mở Chrome Profile cho @${username || accountId} ${proxy ? '[Proxy Active]' : ''}${muteBrowserAudio !== false ? ' [Muted]' : ''}...`,
       });
 
-      // ALWAYS launch monitorLoginFlow for background status & auto-login checking
-      monitorLoginFlow(win, customSession, accInfo, onLog, onAccountStatusChange, onAccountSessionUpdate);
+      const loaded = await loadLoginStartPage(
+        win,
+        customSession,
+        startUrl,
+        { id: accountId, username },
+        proxy,
+        proxyConfig,
+        onLog,
+        onAccountStatusChange,
+        'Mo Chrome'
+      ).catch(err => {
+        console.error('[Proxy] Failed to diagnose login window load:', err);
+        return false;
+      });
+
+      if (!win.isDestroyed() && loaded !== false) {
+        // ALWAYS launch monitorLoginFlow for background status & auto-login checking after initial load completes
+        monitorLoginFlow(win, customSession, accInfo, onLog, onAccountStatusChange, onAccountSessionUpdate);
+      }
 
 
       win.on('closed', async () => {
@@ -202,114 +216,142 @@ export function setupAutomationIPC(
       const queue = [...selectedAccounts];
       const activeWorkers: Promise<void>[] = [];
 
-      const runNextWorker = async () => {
-        if (queue.length === 0) return;
-        const acc = queue.shift()!;
+      const runNextWorker = async (): Promise<void> => {
+        while (queue.length > 0) {
+          const acc = queue.shift();
+          if (!acc) break;
 
-        onLog({
-          accountId: acc.id,
-          accountUsername: acc.username,
-          level: 'info',
-          message: `[Multi-Thread] Mở cửa sổ Chrome cho @${acc.username}...`,
-        });
+          try {
+            onLog({
+              accountId: acc.id,
+              accountUsername: acc.username,
+              level: 'info',
+              message: `[Multi-Thread] Mở cửa sổ Chrome cho @${acc.username}...`,
+            });
 
-        const partition = `persist:tiktok_${acc.id}`;
-        const customSession = session.fromPartition(partition);
+            const partition = `persist:tiktok_${acc.id}`;
+            const customSession = session.fromPartition(partition);
 
-        customSession.setUserAgent(
-          'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
-        );
+            customSession.setUserAgent(
+              'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+            );
 
-        const proxyConfig = await runSessionPreparation(() =>
-          configureSessionProxyAndCookies(customSession, acc.cookie, acc.proxy, acc.proxyType, {
-            skipCookieInjectionIfSessionExists: true,
-          })
-        );
+            const proxyConfig = await runSessionPreparation(() =>
+              configureSessionProxyAndCookies(customSession, acc.cookie, acc.proxy, acc.proxyType, {
+                skipCookieInjectionIfSessionExists: true,
+              })
+            );
 
-        const win = new BrowserWindow({
-          ...getTiledLoginWindowBounds(loginWindows.size),
-          title: `Chrome Multi-Thread [@${acc.username}]`,
-          autoHideMenuBar: true,
-          webPreferences: {
-            session: customSession,
-            nodeIntegration: false,
-            contextIsolation: true,
-            backgroundThrottling: false,
-          },
-        });
+            const win = new BrowserWindow({
+              ...getTiledLoginWindowBounds(loginWindows.size),
+              title: `Chrome Multi-Thread [@${acc.username}]`,
+              autoHideMenuBar: true,
+              webPreferences: {
+                session: customSession,
+                nodeIntegration: false,
+                contextIsolation: true,
+                backgroundThrottling: false,
+              },
+            });
 
-        loginWindows.set(acc.id, win);
-        win.webContents.setAudioMuted(muteBrowserAudio !== false);
-        attachProxyAuthHandler(win, proxyConfig?.auth);
+            loginWindows.set(acc.id, win);
+            win.webContents.setAudioMuted(muteBrowserAudio !== false);
+            attachProxyAuthHandler(win, proxyConfig?.auth);
 
-        const accInfo: AccountInfo = {
-          id: acc.id,
-          username: acc.username,
-          password: acc.password,
-          email: acc.email,
-          passMail: acc.passMail,
-          twoFactor: acc.twoFactor,
-          cookie: acc.cookie,
-        };
+            const accInfo: AccountInfo = {
+              id: acc.id,
+              username: acc.username,
+              password: acc.password,
+              email: acc.email,
+              passMail: acc.passMail,
+              twoFactor: acc.twoFactor,
+              cookie: acc.cookie,
+            };
 
-        const hasCookie = hasValidTikTokCookieString(acc.cookie);
+            const hasCookie = hasValidTikTokCookieString(acc.cookie);
 
-        const startUrl = !hasCookie && acc.password
-          ? 'https://www.tiktok.com/login/phone-or-email/email'
-          : 'https://www.tiktok.com';
-        loadLoginStartPage(win, customSession, startUrl, acc, acc.proxy, proxyConfig, onLog, onAccountStatusChange, 'Mo Chrome da luong')
-          .catch(err => console.error('[Proxy] Failed to diagnose multi-login window load:', err));
+            const startUrl = !hasCookie && acc.password
+              ? 'https://www.tiktok.com/login/phone-or-email/email'
+              : 'https://www.tiktok.com';
 
-        // ALWAYS launch monitorLoginFlow for multi-login windows
-        monitorLoginFlow(win, customSession, accInfo, onLog, onAccountStatusChange, onAccountSessionUpdate);
+            const loaded = await loadLoginStartPage(
+              win,
+              customSession,
+              startUrl,
+              acc,
+              acc.proxy,
+              proxyConfig,
+              onLog,
+              onAccountStatusChange,
+              'Mo Chrome da luong'
+            ).catch(err => {
+              console.error(`[Proxy] Failed to diagnose multi-login window load for @${acc.username}:`, err);
+              onLog({
+                accountId: acc.id,
+                accountUsername: acc.username,
+                level: 'warning',
+                message: `[Multi-Thread] Cảnh báo tải trang cho @${acc.username}: ${err?.message || err}`,
+              });
+              return false;
+            });
 
-
-        await new Promise<void>((resolve) => {
-          win.on('closed', async () => {
-            loginWindows.delete(acc.id);
-
-            try {
-              const cookies = await customSession.cookies.get({ domain: '.tiktok.com' });
-              const hasSessionCookie = cookies.some(
-                c => c.name === 'sessionid' || c.name === 'sessionid_ss' || c.name === 'sid_tt'
-              );
-
-              if (hasSessionCookie) {
-                const savedCookie = await persistTikTokSessionCookies(
-                  acc.id,
-                  acc.username,
-                  customSession,
-                  onLog,
-                  onAccountSessionUpdate,
-                  '[Multi-Thread] '
-                );
-                if (!savedCookie) {
-                  onAccountStatusChange(acc.id, 'authenticated');
-                }
-                onLog({
-                  accountId: acc.id,
-                  accountUsername: acc.username,
-                  level: 'success',
-                  message: `✅ [Multi-Thread] Session Cookie đã được xác nhận thành công cho @${acc.username}!`,
-                });
-              } else {
-                onLog({
-                  accountId: acc.id,
-                  accountUsername: acc.username,
-                  level: 'info',
-                  message: `Đã đóng cửa sổ Chrome của @${acc.username}`,
-                });
-              }
-            } catch (err: any) {
-              console.error('Failed to check cookies for multi-thread:', err);
+            // Launch monitorLoginFlow after initial load completes
+            if (!win.isDestroyed() && loaded !== false) {
+              monitorLoginFlow(win, customSession, accInfo, onLog, onAccountStatusChange, onAccountSessionUpdate);
             }
 
-            resolve();
-          });
-        });
+            await new Promise<void>((resolve) => {
+              win.on('closed', async () => {
+                loginWindows.delete(acc.id);
 
-        if (queue.length > 0) {
-          await runNextWorker();
+                try {
+                  const cookies = await customSession.cookies.get({ domain: '.tiktok.com' });
+                  const hasSessionCookie = cookies.some(
+                    c => c.name === 'sessionid' || c.name === 'sessionid_ss' || c.name === 'sid_tt'
+                  );
+
+                  if (hasSessionCookie) {
+                    const savedCookie = await persistTikTokSessionCookies(
+                      acc.id,
+                      acc.username,
+                      customSession,
+                      onLog,
+                      onAccountSessionUpdate,
+                      '[Multi-Thread] '
+                    );
+                    if (!savedCookie) {
+                      onAccountStatusChange(acc.id, 'authenticated');
+                    }
+                    onLog({
+                      accountId: acc.id,
+                      accountUsername: acc.username,
+                      level: 'success',
+                      message: `✅ [Multi-Thread] Session Cookie đã được xác nhận thành công cho @${acc.username}!`,
+                    });
+                  } else {
+                    onLog({
+                      accountId: acc.id,
+                      accountUsername: acc.username,
+                      level: 'info',
+                      message: `Đã đóng cửa sổ Chrome của @${acc.username}`,
+                    });
+                  }
+                } catch (err: any) {
+                  console.error('Failed to check cookies for multi-thread:', err);
+                } finally {
+                  resolve();
+                }
+              });
+            });
+          } catch (err: any) {
+            console.error(`[Multi-Thread] Error opening Chrome for @${acc.username}:`, err);
+            onLog({
+              accountId: acc.id,
+              accountUsername: acc.username,
+              level: 'error',
+              message: `❌ [Multi-Thread] Lỗi khi mở Chrome cho @${acc.username}: ${err?.message || err}`,
+            });
+          }
         }
       };
 
@@ -317,6 +359,15 @@ export function setupAutomationIPC(
       for (let i = 0; i < initialBatchSize; i++) {
         activeWorkers.push(runNextWorker());
       }
+
+      Promise.allSettled(activeWorkers).then((results) => {
+        const rejected = results.filter(r => r.status === 'rejected');
+        if (rejected.length > 0) {
+          console.error('[Multi-Thread] Some worker promises were rejected:', rejected);
+        }
+      }).catch(err => {
+        console.error('[Multi-Thread] Worker supervisor error:', err);
+      });
 
       return { success: true, message: `Multi-thread launcher started for ${selectedAccounts.length} accounts` };
     }
