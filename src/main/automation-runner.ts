@@ -3474,8 +3474,8 @@ async function executeTaskForAccount(
 
           await waitForSeedingDelay(1000, win);
 
-          // Step 1 & 2: Detect if input is already visible, or find the comment icon to open comment drawer
-          const commentOpenResult = await win.webContents.executeJavaScript(`
+          // Step 1: Check if right comment sidebar is open or if we need to open it
+          const openState = await win.webContents.executeJavaScript(`
             (async () => {
               try {
                 const isVisible = (el) => {
@@ -3485,23 +3485,24 @@ async function executeTaskForAccount(
                   return rect.width > 0 && rect.height > 0 && style.visibility !== 'hidden' && style.display !== 'none';
                 };
 
-                const inputSelectors = [
-                  '[data-e2e="comment-input"]',
-                  'div[contenteditable="true"]',
-                  'div[contenteditable="plaintext-only"]',
-                  'div[contenteditable]',
-                  '[role="textbox"]',
-                  '[data-e2e="comment-input-area"]',
-                  'div[class*="BottomCommentContainer"]',
-                  'div[class*="DivCommentInput"]',
-                  'div[class*="InputArea"]',
-                  'textarea'
+                // Check if right comment panel is already open
+                const rightPanelSelectors = [
+                  '[data-e2e="video-detail-container"]',
+                  'div[class*="DivCommentContainer"]',
+                  'div[class*="DivRightContainer"]',
+                  'div[class*="DivContentContainer"]',
+                  'div[class*="CommentListContainer"]'
                 ];
+                const isPanelAlreadyOpen = rightPanelSelectors.some(sel => {
+                  const el = document.querySelector(sel);
+                  return el && isVisible(el) && el.getBoundingClientRect().width >= 200;
+                });
 
-                let input = inputSelectors.map(sel => document.querySelector(sel)).find(isVisible);
-                if (input) return { inputAlreadyVisible: true };
+                if (isPanelAlreadyOpen) {
+                  return { panelOpen: true, actionTaken: 'already_open' };
+                }
 
-                // If input is not visible, find the comment icon on the video action bar
+                // If panel is NOT open (Feed mode), click comment icon once to open it
                 const iconSelectors = [
                   '[data-e2e="comment-icon"]',
                   '[data-e2e="browse-comment-icon"]',
@@ -3510,62 +3511,36 @@ async function executeTaskForAccount(
                   'button[aria-label*="comment" i]',
                   'button[aria-label*="bình luận" i]',
                   'button[aria-label*="Bình luận" i]',
-                  'span[aria-label*="comment" i]',
-                  'span[aria-label*="bình luận" i]',
-                  '[role="button"][aria-label*="comment" i]',
-                  'strong[data-e2e*="comment-count"]',
-                  '[class*="CommentButton"]',
-                  '[class*="ButtonActionItem"]'
+                  'strong[data-e2e*="comment-count"]'
                 ];
 
-                let iconEl = null;
                 for (const sel of iconSelectors) {
-                  const matches = Array.from(document.querySelectorAll(sel)).filter(isVisible);
-                  if (matches.length > 0) {
-                    iconEl = matches[0].closest('button') || matches[0].closest('[role="button"]') || matches[0];
-                    break;
+                  const icon = Array.from(document.querySelectorAll(sel)).find(isVisible);
+                  if (icon) {
+                    const btn = icon.closest('button') || icon.closest('[role="button"]') || icon;
+                    btn.click();
+                    const rect = btn.getBoundingClientRect();
+                    return {
+                      panelOpen: false,
+                      actionTaken: 'clicked_icon',
+                      clickX: Math.round(rect.left + rect.width / 2),
+                      clickY: Math.round(rect.top + rect.height / 2)
+                    };
                   }
                 }
 
-                // If still not found, check next sibling of the Like button
-                if (!iconEl) {
-                  const likeEl = document.querySelector('[data-e2e="like-icon"], [data-e2e="browse-like-icon"], button[aria-label*="like" i]');
-                  if (likeEl) {
-                    const likeContainer = likeEl.closest('button')?.parentElement || likeEl.parentElement;
-                    const nextContainer = likeContainer?.nextElementSibling;
-                    const btn = nextContainer?.querySelector('button, [role="button"]') || nextContainer;
-                    if (btn && isVisible(btn)) {
-                      iconEl = btn;
-                    }
-                  }
-                }
-
-                if (iconEl) {
-                  iconEl.click();
-                  const rect = iconEl.getBoundingClientRect();
-                  return {
-                    inputAlreadyVisible: false,
-                    openedIcon: true,
-                    clickX: Math.round(rect.left + rect.width / 2),
-                    clickY: Math.round(rect.top + rect.height / 2)
-                  };
-                }
-
-                return { inputAlreadyVisible: false, openedIcon: false, reason: 'Không tìm thấy ô nhập hoặc biểu tượng bình luận' };
+                return { panelOpen: false, actionTaken: 'none' };
               } catch(e) {
-                return { inputAlreadyVisible: false, openedIcon: false, error: e.toString() };
+                return { panelOpen: false, error: e.toString() };
               }
             })();
           `);
 
-          if (!commentOpenResult?.inputAlreadyVisible && commentOpenResult?.openedIcon) {
-            if (commentOpenResult.clickX && commentOpenResult.clickY) {
-              await performCdpClick(win, commentOpenResult.clickX, commentOpenResult.clickY).catch(() => {});
-            }
+          if (openState?.actionTaken === 'clicked_icon') {
             await waitForSeedingDelay(1500, win);
           }
 
-          // Step 3 & 4: Focus input, type comment, and click Post
+          // Step 2: Locate input area, scroll to it, insert text and submit
           const commentResult = await win.webContents.executeJavaScript(`
             (async () => {
               try {
@@ -3576,6 +3551,15 @@ async function executeTaskForAccount(
                   return rect.width > 0 && rect.height > 0 && style.visibility !== 'hidden' && style.display !== 'none';
                 };
 
+                // Scroll right sidebar to bottom to reveal comment box
+                const rightPanels = document.querySelectorAll(
+                  '[data-e2e="video-detail-container"], div[class*="CommentContainer"], div[class*="DivCommentListContainer"], div[class*="DivRightContainer"], div[class*="DivContentContainer"], main'
+                );
+                rightPanels.forEach(p => {
+                  try { p.scrollTop = p.scrollHeight; } catch(e) {}
+                });
+
+                // Find input target
                 const inputSelectors = [
                   '[data-e2e="comment-input"]',
                   'div[contenteditable="true"]',
@@ -3586,50 +3570,52 @@ async function executeTaskForAccount(
                   'div[class*="BottomCommentContainer"]',
                   'div[class*="DivCommentInput"]',
                   'div[class*="InputArea"]',
+                  'div[class*="CommentInput"]',
                   'textarea'
                 ];
 
-                // Scroll right sidebar to bottom to reveal comment box
-                const commentContainers = document.querySelectorAll(
-                  '[data-e2e="video-detail-container"], div[class*="CommentContainer"], div[class*="DivCommentListContainer"], div[class*="DivRightContainer"], div[class*="DivContentContainer"]'
-                );
-                commentContainers.forEach(c => {
-                  try { c.scrollTop = c.scrollHeight; } catch(e) {}
-                });
+                let target = null;
+                for (const sel of inputSelectors) {
+                  const matches = Array.from(document.querySelectorAll(sel)).filter(isVisible);
+                  if (matches.length > 0) {
+                    target = matches[matches.length - 1]; // pick the bottom-most input area
+                    break;
+                  }
+                }
 
-                let input = inputSelectors.map(sel => document.querySelector(sel)).find(isVisible);
-                if (!input) {
-                  const allTextBoxes = Array.from(document.querySelectorAll('div, p, span, textarea, input')).filter(el => {
+                if (!target) {
+                  const fallbackBox = Array.from(document.querySelectorAll('div, p, span, textarea, input')).filter(el => {
                     if (!isVisible(el)) return false;
-                    const placeholder = (el.getAttribute('placeholder') || el.getAttribute('data-placeholder') || el.getAttribute('aria-label') || '').toLowerCase();
-                    return placeholder.includes('comment') || placeholder.includes('bình luận') || placeholder.includes('add comment') || placeholder.includes('thêm bình luận');
+                    const ph = (el.getAttribute('placeholder') || el.getAttribute('data-placeholder') || el.getAttribute('aria-label') || '').toLowerCase();
+                    return ph.includes('comment') || ph.includes('bình luận') || ph.includes('add comment') || ph.includes('thêm bình luận');
                   });
-                  input = allTextBoxes[0];
+                  target = fallbackBox[0];
                 }
 
-                if (!input) {
-                  return { success: false, reason: 'Không tìm thấy ô nhập bình luận sau khi mở tab' };
+                if (!target) {
+                  return { success: false, reason: 'Không tìm thấy ô nhập bình luận' };
                 }
 
-                input.scrollIntoView({ behavior: 'instant', block: 'center' });
+                target.scrollIntoView({ behavior: 'instant', block: 'center' });
+                await new Promise(r => setTimeout(r, 150));
+
+                target.click();
+                target.focus();
                 await new Promise(r => setTimeout(r, 200));
 
-                input.click();
-                input.focus();
-                await new Promise(r => setTimeout(r, 200));
-
-                const editable = input.getAttribute('contenteditable') ? input :
-                  (input.querySelector('[contenteditable], [role="textbox"], textarea, input') || input);
+                // Find the editable node inside
+                const editable = target.getAttribute('contenteditable') ? target :
+                  (target.querySelector('[contenteditable], [role="textbox"], textarea, input') || target);
 
                 editable.focus();
 
-                // Select existing content if any and insert text
+                // Clear & insert text
                 try {
-                  const selection = window.getSelection();
+                  const sel = window.getSelection();
                   const range = document.createRange();
                   range.selectNodeContents(editable);
-                  selection.removeAllRanges();
-                  selection.addRange(range);
+                  sel.removeAllRanges();
+                  sel.addRange(range);
                 } catch(e) {}
 
                 document.execCommand('insertText', false, ${JSON.stringify(commentText)});
@@ -3648,7 +3634,7 @@ async function executeTaskForAccount(
                 await new Promise(r => setTimeout(r, 600));
 
                 // Click Post button
-                const sendBtns = [
+                const postBtns = [
                   '[data-e2e="comment-post"]',
                   'div[data-e2e="comment-post"]',
                   'button[data-e2e="comment-post"]',
@@ -3660,7 +3646,7 @@ async function executeTaskForAccount(
                 ];
 
                 let posted = false;
-                for (const sel of sendBtns) {
+                for (const sel of postBtns) {
                   const btn = document.querySelector(sel);
                   if (btn && isVisible(btn)) {
                     btn.click();
@@ -3682,7 +3668,7 @@ async function executeTaskForAccount(
             })();
           `);
 
-          // Send Enter key as final confirmation
+          // Send Enter key as safety confirmation
           win.webContents.sendInputEvent({ type: 'keyDown', keyCode: 'Enter' });
           win.webContents.sendInputEvent({ type: 'keyUp', keyCode: 'Enter' });
 
@@ -3692,7 +3678,7 @@ async function executeTaskForAccount(
             level: commentResult?.success ? 'info' : 'warning',
             message: commentResult?.success
               ? `💬 Đã nhập và gửi yêu cầu bình luận video: "${commentText}".`
-              : `💬 Không nhập được bình luận video cho @${acc.username}: ${commentResult?.reason || commentResult?.error || commentOpenResult?.reason || 'không rõ lỗi'}.`,
+              : `💬 Không nhập được bình luận video cho @${acc.username}: ${commentResult?.reason || commentResult?.error || 'không rõ lỗi'}.`,
           });
         }
       }
