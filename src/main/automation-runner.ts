@@ -3472,75 +3472,8 @@ async function executeTaskForAccount(
             message: `Đang tự động gõ bình luận: "${commentText}"...`,
           });
 
-          await waitForSeedingDelay(1000, win);
+          await waitForSeedingDelay(1200, win);
 
-          // Step 1: Check if right comment sidebar is open or if we need to open it
-          const openState = await win.webContents.executeJavaScript(`
-            (async () => {
-              try {
-                const isVisible = (el) => {
-                  if (!el) return false;
-                  const rect = el.getBoundingClientRect();
-                  const style = window.getComputedStyle(el);
-                  return rect.width > 0 && rect.height > 0 && style.visibility !== 'hidden' && style.display !== 'none';
-                };
-
-                // Check if right comment panel is already open
-                const rightPanelSelectors = [
-                  '[data-e2e="video-detail-container"]',
-                  'div[class*="DivCommentContainer"]',
-                  'div[class*="DivRightContainer"]',
-                  'div[class*="DivContentContainer"]',
-                  'div[class*="CommentListContainer"]'
-                ];
-                const isPanelAlreadyOpen = rightPanelSelectors.some(sel => {
-                  const el = document.querySelector(sel);
-                  return el && isVisible(el) && el.getBoundingClientRect().width >= 200;
-                });
-
-                if (isPanelAlreadyOpen) {
-                  return { panelOpen: true, actionTaken: 'already_open' };
-                }
-
-                // If panel is NOT open (Feed mode), click comment icon once to open it
-                const iconSelectors = [
-                  '[data-e2e="comment-icon"]',
-                  '[data-e2e="browse-comment-icon"]',
-                  '[data-e2e="feed-comment-icon"]',
-                  '[data-e2e="video-comment-icon"]',
-                  'button[aria-label*="comment" i]',
-                  'button[aria-label*="bình luận" i]',
-                  'button[aria-label*="Bình luận" i]',
-                  'strong[data-e2e*="comment-count"]'
-                ];
-
-                for (const sel of iconSelectors) {
-                  const icon = Array.from(document.querySelectorAll(sel)).find(isVisible);
-                  if (icon) {
-                    const btn = icon.closest('button') || icon.closest('[role="button"]') || icon;
-                    btn.click();
-                    const rect = btn.getBoundingClientRect();
-                    return {
-                      panelOpen: false,
-                      actionTaken: 'clicked_icon',
-                      clickX: Math.round(rect.left + rect.width / 2),
-                      clickY: Math.round(rect.top + rect.height / 2)
-                    };
-                  }
-                }
-
-                return { panelOpen: false, actionTaken: 'none' };
-              } catch(e) {
-                return { panelOpen: false, error: e.toString() };
-              }
-            })();
-          `);
-
-          if (openState?.actionTaken === 'clicked_icon') {
-            await waitForSeedingDelay(1500, win);
-          }
-
-          // Step 2: Locate input area, scroll to it, insert text and submit
           const commentResult = await win.webContents.executeJavaScript(`
             (async () => {
               try {
@@ -3551,15 +3484,7 @@ async function executeTaskForAccount(
                   return rect.width > 0 && rect.height > 0 && style.visibility !== 'hidden' && style.display !== 'none';
                 };
 
-                // Scroll right sidebar to bottom to reveal comment box
-                const rightPanels = document.querySelectorAll(
-                  '[data-e2e="video-detail-container"], div[class*="CommentContainer"], div[class*="DivCommentListContainer"], div[class*="DivRightContainer"], div[class*="DivContentContainer"], main'
-                );
-                rightPanels.forEach(p => {
-                  try { p.scrollTop = p.scrollHeight; } catch(e) {}
-                });
-
-                // Find input target
+                // 1. Check if comment input area is available on page
                 const inputSelectors = [
                   '[data-e2e="comment-input"]',
                   'div[contenteditable="true"]',
@@ -3578,11 +3503,12 @@ async function executeTaskForAccount(
                 for (const sel of inputSelectors) {
                   const matches = Array.from(document.querySelectorAll(sel)).filter(isVisible);
                   if (matches.length > 0) {
-                    target = matches[matches.length - 1]; // pick the bottom-most input area
+                    target = matches[matches.length - 1]; // bottom-most input element
                     break;
                   }
                 }
 
+                // If not found directly, check placeholder matches
                 if (!target) {
                   const fallbackBox = Array.from(document.querySelectorAll('div, p, span, textarea, input')).filter(el => {
                     if (!isVisible(el)) return false;
