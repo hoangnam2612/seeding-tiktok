@@ -191,6 +191,41 @@ function getTiledSeedingWindowBounds(slotIndex: number) {
   };
 }
 
+function applyTikTokSeedingZoom(win: BrowserWindow) {
+  if (win.isDestroyed()) return;
+
+  try {
+    const currentZoom = win.webContents.getZoomFactor();
+    if (Math.abs(currentZoom - TIKTOK_SEEDING_ZOOM) > 0.001) {
+      win.webContents.setZoomFactor(TIKTOK_SEEDING_ZOOM);
+    }
+  } catch {}
+}
+
+function keepTikTokSeedingZoom(win: BrowserWindow) {
+  const contents = win.webContents;
+  const reapplyZoom = () => {
+    setTimeout(() => applyTikTokSeedingZoom(win), 0);
+    setTimeout(() => applyTikTokSeedingZoom(win), 500);
+  };
+
+  applyTikTokSeedingZoom(win);
+  contents.on('did-start-navigation', reapplyZoom);
+  contents.on('dom-ready', reapplyZoom);
+  contents.on('did-finish-load', reapplyZoom);
+  contents.on('did-navigate-in-page', reapplyZoom);
+
+  win.on('closed', () => {
+    try {
+      if (contents.isDestroyed()) return;
+      contents.removeListener('did-start-navigation', reapplyZoom);
+      contents.removeListener('dom-ready', reapplyZoom);
+      contents.removeListener('did-finish-load', reapplyZoom);
+      contents.removeListener('did-navigate-in-page', reapplyZoom);
+    } catch {}
+  });
+}
+
 function hasValidTikTokCookieString(cookieStr?: string): boolean {
   if (!cookieStr) return false;
   const lowerCookie = cookieStr.toLowerCase();
@@ -3140,6 +3175,7 @@ async function executeTaskForAccount(
     },
   });
   seedingWindows.add(win);
+  keepTikTokSeedingZoom(win);
   let closedByAutomation = false;
   win.on('closed', () => {
     seedingWindows.delete(win);
@@ -3235,6 +3271,7 @@ async function executeTaskForAccount(
         });
         return false;
       });
+      applyTikTokSeedingZoom(win);
     }
     throwIfSeedingCancelled(win);
 
@@ -3437,7 +3474,7 @@ async function executeTaskForAccount(
             message: `Đang tự động gõ bình luận: "${commentText}"...`,
           });
 
-          await new Promise(res => setTimeout(res, 1200));
+          await waitForSeedingDelay(1000, win);
 
           const commentResult = await win.webContents.executeJavaScript(`
             (async () => {
@@ -3449,45 +3486,65 @@ async function executeTaskForAccount(
                   return rect.width > 0 && rect.height > 0 && style.visibility !== 'hidden' && style.display !== 'none';
                 };
 
-                // 1. Check if comment input is already visible on screen
+                // 1. Check for comment input selectors
                 const inputSelectors = [
                   '[data-e2e="comment-input"]',
                   'div[contenteditable="true"]',
+                  'div[contenteditable="plaintext-only"]',
+                  'div[contenteditable]',
                   '[role="textbox"]',
                   '[data-e2e="comment-input-area"]',
-                  'textarea'
+                  'div[class*="BottomCommentContainer"]',
+                  'div[class*="DivCommentInput"]',
+                  'div[class*="InputArea"]',
+                  'textarea',
+                  'input[placeholder*="comment" i]',
+                  'input[placeholder*="bình luận" i]'
                 ];
+
+                // Scroll right column container to bottom to reveal comment box if needed
+                const commentContainers = document.querySelectorAll(
+                  '[data-e2e="video-detail-container"], div[class*="CommentContainer"], div[class*="DivCommentListContainer"], div[class*="DivRightContainer"], div[class*="DivContentContainer"]'
+                );
+                commentContainers.forEach(c => {
+                  try { c.scrollTop = c.scrollHeight; } catch(e) {}
+                });
 
                 let input = inputSelectors.map(sel => document.querySelector(sel)).find(isVisible);
 
-                // 2. If not visible, click the comment icon to open side panel
+                // If not found directly, find any element with placeholder / aria-label matching comment
                 if (!input) {
-                  const commentIcon = document.querySelector('[data-e2e="comment-icon"]') ||
-                                      document.querySelector('span[aria-label*="comment" i]') ||
-                                      document.querySelector('button[aria-label*="comment" i]');
-                  if (commentIcon) {
-                    commentIcon.click();
-                    await new Promise(r => setTimeout(r, 600));
-                  }
-                  input = inputSelectors.map(sel => document.querySelector(sel)).find(isVisible);
+                  const allTextBoxes = Array.from(document.querySelectorAll('div, p, span, textarea, input')).filter(el => {
+                    if (!isVisible(el)) return false;
+                    const placeholder = (el.getAttribute('placeholder') || el.getAttribute('data-placeholder') || el.getAttribute('aria-label') || '').toLowerCase();
+                    return placeholder.includes('comment') || placeholder.includes('bình luận') || placeholder.includes('add comment') || placeholder.includes('thêm bình luận');
+                  });
+                  input = allTextBoxes[0];
                 }
 
                 if (!input) {
                   return { success: false, reason: 'Không tìm thấy ô nhập bình luận' };
                 }
 
+                input.scrollIntoView({ behavior: 'instant', block: 'center' });
+                await new Promise(r => setTimeout(r, 200));
+
                 input.click();
                 input.focus();
-                await new Promise(r => setTimeout(r, 300));
+                await new Promise(r => setTimeout(r, 200));
 
-                // 3. Insert text directly via document.execCommand
+                // Find editable child if input was a container wrapper
+                const editableInput = input.getAttribute('contenteditable') ? input :
+                  (input.querySelector('[contenteditable], [role="textbox"], textarea, input') || input);
+
+                editableInput.focus();
                 document.execCommand('insertText', false, ${JSON.stringify(commentText)});
-                input.dispatchEvent(new Event('input', { bubbles: true }));
-                input.dispatchEvent(new Event('change', { bubbles: true }));
+                editableInput.dispatchEvent(new Event('input', { bubbles: true }));
+                editableInput.dispatchEvent(new Event('change', { bubbles: true }));
 
-                await new Promise(r => setTimeout(r, 600));
+                await new Promise(r => setTimeout(r, 500));
 
-                // 4. Click the Post / Send button
+                // Click Post / Send button
                 const sendBtns = [
                   '[data-e2e="comment-post"]',
                   'div[data-e2e="comment-post"]',
@@ -3495,13 +3552,21 @@ async function executeTaskForAccount(
                   '[aria-label*="Post" i]',
                   '[aria-label*="Đăng" i]',
                   '[class*="DivPostButton"]',
-                  '[class*="PostBtn"]'
+                  '[class*="PostBtn"]',
+                  '[class*="ButtonPost"]'
                 ];
+
                 for (const sel of sendBtns) {
                   const btn = document.querySelector(sel);
                   if (btn && isVisible(btn)) {
                     btn.click();
-                    return { success: true, method: 'post-button' };
+                    const rect = btn.getBoundingClientRect();
+                    return {
+                      success: true,
+                      method: 'post-button',
+                      postX: Math.round(rect.left + rect.width / 2),
+                      postY: Math.round(rect.top + rect.height / 2)
+                    };
                   }
                 }
 
@@ -3512,14 +3577,20 @@ async function executeTaskForAccount(
             })();
           `);
 
-          win.webContents.sendInputEvent({ type: 'keyDown', keyCode: 'Enter' });
-          win.webContents.sendInputEvent({ type: 'keyUp', keyCode: 'Enter' });
+          if (commentResult?.postX && commentResult?.postY) {
+            await performCdpClick(win, commentResult.postX, commentResult.postY).catch(() => {});
+          } else if (commentResult?.success) {
+            win.webContents.sendInputEvent({ type: 'keyDown', keyCode: 'Enter' });
+            win.webContents.sendInputEvent({ type: 'keyUp', keyCode: 'Enter' });
+          }
 
           onLog({
             accountId: acc.id,
             accountUsername: acc.username,
-            level: 'info',
-            message: `💬 Đã nhập và gửi yêu cầu bình luận video: "${commentText}".`,
+            level: commentResult?.success ? 'info' : 'warning',
+            message: commentResult?.success
+              ? `💬 Đã nhập và gửi yêu cầu bình luận video: "${commentText}".`
+              : `💬 Không nhập được bình luận video cho @${acc.username}: ${commentResult?.reason || commentResult?.error || 'không rõ lỗi'}.`,
           });
         }
       }
