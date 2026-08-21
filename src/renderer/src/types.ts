@@ -56,3 +56,21 @@ export interface TaskLogItem {
   level: 'info' | 'success' | 'warning' | 'error';
   message: string;
 }
+
+export interface ClientAuthState {
+  authenticated: boolean;
+  licensed: boolean;
+  blocked: boolean;
+  user?: {
+    id: string;
+    username: string;
+    email: string;
+    role?: string;
+    status?: string;
+  };
+  appCode: string;
+  expiresAt?: string | null;
+  isExpired: boolean;
+  message?: string;
+  lastCheckedAt?: string;
+}

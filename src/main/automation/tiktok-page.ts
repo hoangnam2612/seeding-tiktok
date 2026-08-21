@@ -317,7 +317,11 @@ export async function detectTikTokLoggedOutState(win: BrowserWindow): Promise<{
                  txt.includes('đăng nhập để bình luận') ||
                  txt.includes('dang nhap de binh luan');
         }) || bodyText.includes('log in to comment') || bodyText.includes('login to comment');
+        const hasLoginModal = !!document.querySelector(
+          '[data-e2e="login-modal"], [data-e2e="login-title"], #loginModalContentContainer, #loginContainer, [data-e2e="channel-item"]'
+        );
         const hasLoginForm = Array.from(document.querySelectorAll('input[type="password"]')).some(isVisible) ||
+                             hasLoginModal ||
                              bodyText.includes('log in to tiktok') ||
                              bodyText.includes('use phone or email') ||
                              bodyText.includes('use phone / email') ||
@@ -327,15 +331,15 @@ export async function detectTikTokLoggedOutState(win: BrowserWindow): Promise<{
                                     const txt = textOf(el);
                                     return txt.includes('log out') || txt.includes('đăng xuất') || txt.includes('dang xuat');
                                   });
-        const loggedOut = !hasLoggedInSignal && (hasLoginButton || hasLoginToComment || hasLoginForm);
+        const loggedOut = !hasLoggedInSignal && (hasLoginButton || hasLoginToComment || hasLoginForm || hasLoginModal);
         const reason = hasLoginToComment
           ? 'TikTok yeu cau dang nhap de binh luan.'
-          : hasLoginForm
-            ? 'Dang o man hinh dang nhap TikTok.'
+          : (hasLoginForm || hasLoginModal)
+            ? 'Dang o man hinh dang nhap TikTok (Login Modal/Form).'
             : hasLoginButton
               ? 'TikTok hien nut Log in.'
               : undefined;
-        return { loggedOut, reason, hasLoginButton, hasLoginToComment, hasLoginForm, hasLoggedInSignal };
+        return { loggedOut, reason, hasLoginButton, hasLoginToComment, hasLoginForm, hasLoggedInSignal, hasLoginModal };
       } catch(e) {
         return { loggedOut: false, reason: String(e) };
       }

@@ -11,6 +11,7 @@ import { NestFactory } from '@nestjs/core';
 import { AppModule } from './nest/app.module';
 import { AccountsService } from './nest/accounts/accounts.service';
 import { AutomationService } from './nest/automation/automation.service';
+import { ClientAuthService } from './nest/client-auth/client-auth.service';
 import { setupAutomationIPC } from './automation-runner';
 
 
@@ -43,6 +44,22 @@ async function bootstrapNest() {
 
   const accountsService = nestApp.get(AccountsService);
   const automationService = nestApp.get(AutomationService);
+  const clientAuthService = nestApp.get(ClientAuthService);
+
+  const reportCrash = (label: string, error: unknown) => {
+    const details = error instanceof Error
+      ? `${label}: ${error.stack || error.message}`
+      : `${label}: ${String(error)}`;
+    clientAuthService.reportTelemetry('crash', details).catch(() => undefined);
+  };
+  process.on('uncaughtException', (error) => {
+    reportCrash('uncaughtException', error);
+    console.error('[Uncaught Exception]', error);
+  });
+  process.on('unhandledRejection', (reason) => {
+    reportCrash('unhandledRejection', reason);
+    console.error('[Unhandled Rejection]', reason);
+  });
 
   setupAutomationIPC(
     (log) => automationService.addLog(log),
@@ -52,7 +69,8 @@ async function bootstrapNest() {
       if (!mainWindow?.isDestroyed()) {
         mainWindow?.webContents.send('seeding-state-changed', state);
       }
-    }
+    },
+    () => clientAuthService.ensureLicensed()
   );
 }
 

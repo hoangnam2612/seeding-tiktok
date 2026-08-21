@@ -19,7 +19,7 @@ import {
 } from './components/Icons';
 import { StatusBadge } from './components/StatusBadge';
 import { ThemeToggle } from './components/ThemeToggle';
-import { AccountCategory, TikTokAccount, ProxyEntry, TaskLogItem } from './types';
+import { AccountCategory, TikTokAccount, ProxyEntry, TaskLogItem, ClientAuthState } from './types';
 import { apiFetch, NEST_BASE_URL } from './utils/api';
 import { computeVisibleSelection, toggleSelectAllVisible, toggleSelectId } from './utils/selection';
 
@@ -169,6 +169,24 @@ export default function App() {
   const [muteBrowserAudio, setMuteBrowserAudio] = useState<boolean>(true);
   const [omocaptchaApiKey, setOmocaptchaApiKey] = useState<string>('');
   const [isTaskExecuting, setIsTaskExecuting] = useState<boolean>(false);
+  const [clientAuth, setClientAuth] = useState<ClientAuthState | null>(null);
+  const [authLoading, setAuthLoading] = useState<boolean>(true);
+  const [authMode, setAuthMode] = useState<'login' | 'register'>('login');
+  const [authUsername, setAuthUsername] = useState<string>('');
+  const [authEmail, setAuthEmail] = useState<string>('');
+  const [authPassword, setAuthPassword] = useState<string>('');
+  const [authOtpCode, setAuthOtpCode] = useState<string>('');
+  const [licenseKeyCode, setLicenseKeyCode] = useState<string>('');
+  const [authMessage, setAuthMessage] = useState<string>('');
+  const [authBusy, setAuthBusy] = useState<boolean>(false);
+  const [updateInfo, setUpdateInfo] = useState<any>(null);
+  const [webhookName, setWebhookName] = useState<string>('Tikmax Client Webhook');
+  const [webhookUrl, setWebhookUrl] = useState<string>('');
+  const [webhookSecret, setWebhookSecret] = useState<string>('');
+  const [webhookEnabled, setWebhookEnabled] = useState<boolean>(true);
+  const [webhookEvents, setWebhookEvents] = useState<string>('user.banned\nlicense.expired\nsession.kicked\nuser.activated');
+  const [webhookMessage, setWebhookMessage] = useState<string>('');
+  const [webhookBusy, setWebhookBusy] = useState<boolean>(false);
 
   // Logs State
   const [logs, setLogs] = useState<TaskLogItem[]>([]);
@@ -256,13 +274,78 @@ export default function App() {
     }
   };
 
+  const refreshClientAuth = async (): Promise<ClientAuthState | null> => {
+    try {
+      const res = await apiFetch(`${NEST_BASE_URL}/client-auth/me`, { method: 'POST' });
+      const json = await res.json();
+      const nextAuth = json.data || null;
+      if (nextAuth) setClientAuth(nextAuth);
+      if (!json.success && json.message) setAuthMessage(json.message);
+      return nextAuth;
+    } catch (err) {
+      setAuthMessage('Không kết nối được server bản quyền.');
+      return null;
+    }
+  };
+
+  const bootstrapClientAuth = async () => {
+    setAuthLoading(true);
+    try {
+      const res = await apiFetch(`${NEST_BASE_URL}/client-auth/bootstrap`, { method: 'POST' });
+      const json = await res.json();
+      const nextAuth = json.data?.auth || null;
+      setClientAuth(nextAuth);
+      setUpdateInfo(json.data?.update || null);
+      if (!json.success && json.message) setAuthMessage(json.message);
+    } catch (err) {
+      setAuthMessage('Không kiểm tra được trạng thái đăng nhập/bản quyền.');
+    } finally {
+      setAuthLoading(false);
+    }
+  };
+
+  const fetchWebhookConfig = async () => {
+    try {
+      const res = await apiFetch(`${NEST_BASE_URL}/client-auth/webhook/config`);
+      const json = await res.json();
+      const config = json.data;
+      if (!json.success || !config) return;
+      setWebhookName(config.name || 'Tikmax Client Webhook');
+      setWebhookUrl(config.webhookUrl || '');
+      setWebhookSecret(config.secretKey || '');
+      setWebhookEnabled(config.isEnabled !== false);
+      setWebhookEvents(Array.isArray(config.events) ? config.events.join('\n') : webhookEvents);
+    } catch {
+      // Webhook config is admin-only on the license server; ignore for regular users.
+    }
+  };
+
+  const requireValidLicense = async (): Promise<boolean> => {
+    const nextAuth = await refreshClientAuth();
+    if (!nextAuth?.authenticated) {
+      setAuthMessage('Vui lòng đăng nhập tài khoản MKT Tikmax trước.');
+      return false;
+    }
+    if (nextAuth.blocked) {
+      setAuthMessage(nextAuth.message || 'Tài khoản đã bị khóa hoặc không còn hoạt động.');
+      return false;
+    }
+    if (!nextAuth.licensed) {
+      setAuthMessage('Bản quyền TIKMAX chưa kích hoạt hoặc đã hết hạn.');
+      return false;
+    }
+    return true;
+  };
+
   useEffect(() => {
+    bootstrapClientAuth();
     fetchNestStatus();
     fetchCategories();
     fetchAccounts();
     fetchProxies();
     fetchSettings();
     fetchLogs();
+    fetchWebhookConfig();
 
     const interval = setInterval(() => {
       fetchAccounts();
@@ -327,53 +410,6 @@ export default function App() {
       }
     } catch (err) {
       alert('Lỗi thêm tài khoản');
-    }
-  };
-
-  const handleTestGenerate2FA = async (acc: TikTokAccount) => {
-    if (!acc.twoFactor) {
-      alert('Tài khoản này chưa nhập Khóa Secret Key 2FA!');
-      return;
-    }
-    try {
-      const res = await apiFetch(`${NEST_BASE_URL}/accounts/totp`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ twoFactor: acc.twoFactor }),
-      });
-      const json = await res.json();
-      if (json.success && json.code) {
-        alert(`🔑 Mã 2FA TOTP 6 số tính toán tự động: [ ${json.code} ]`);
-      } else {
-        alert('⚠️ Không thể tính mã 2FA. Kiểm tra lại chuỗi Secret Key.');
-      }
-    } catch (err) {
-      alert('Lỗi kết nối máy chủ 2FA');
-    }
-  };
-
-  const handleTestFetchOtp = async (acc: TikTokAccount) => {
-    const email = acc.email || acc.username;
-    const passMail = acc.passMail;
-    if (!email || !passMail) {
-      alert('Tài khoản này chưa nhập đầy đủ Email và PassMail!');
-      return;
-    }
-    alert(`⏳ Đang kết nối ngầm hòm thư ${email} để bóc tách mã OTP 6 số từ TikTok (chỉ đọc mail gần đây)...`);
-    try {
-      const res = await apiFetch(`${NEST_BASE_URL}/accounts/fetch-otp`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email, passMail, requestedAt: Date.now() }),
-      });
-      const json = await res.json();
-      if (json.success && json.otp) {
-        alert(`🎉 Đọc thành công mã OTP mới từ TikTok: [ ${json.otp} ]`);
-      } else {
-        alert(`⚠️ Thông báo: ${json.message || 'Chưa tìm thấy mã OTP mới'}`);
-      }
-    } catch (err) {
-      alert('Lỗi kết nối máy chủ đọc OTP');
     }
   };
 
@@ -450,6 +486,146 @@ export default function App() {
       }
     } catch (err) {
       alert('Lỗi lưu OmoCaptcha API key');
+    }
+  };
+
+  const handleSendRegisterOtp = async () => {
+    if (!authEmail.trim()) {
+      setAuthMessage('Nhập email trước khi gửi OTP.');
+      return;
+    }
+    setAuthBusy(true);
+    try {
+      const res = await apiFetch(`${NEST_BASE_URL}/client-auth/send-otp`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email: authEmail.trim(), purpose: 'register' }),
+      });
+      const json = await res.json();
+      setAuthMessage(json.message || (json.success ? 'Đã gửi OTP tới email.' : 'Gửi OTP thất bại.'));
+    } catch {
+      setAuthMessage('Không gửi được OTP. Kiểm tra kết nối mạng/server.');
+    } finally {
+      setAuthBusy(false);
+    }
+  };
+
+  const handleClientRegister = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setAuthBusy(true);
+    try {
+      const res = await apiFetch(`${NEST_BASE_URL}/client-auth/register`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          username: authUsername,
+          email: authEmail,
+          password: authPassword,
+          otpCode: authOtpCode,
+        }),
+      });
+      const json = await res.json();
+      setAuthMessage(json.message || (json.success ? 'Đăng ký thành công. Bạn có thể đăng nhập.' : 'Đăng ký thất bại.'));
+      if (json.success) setAuthMode('login');
+    } catch {
+      setAuthMessage('Không đăng ký được. Kiểm tra kết nối mạng/server.');
+    } finally {
+      setAuthBusy(false);
+    }
+  };
+
+  const handleClientLogin = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setAuthBusy(true);
+    try {
+      const res = await apiFetch(`${NEST_BASE_URL}/client-auth/login`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ username: authUsername, password: authPassword }),
+      });
+      const json = await res.json();
+      if (json.data) setClientAuth(json.data);
+      setAuthMessage(json.message || (json.success ? 'Đăng nhập thành công.' : 'Đăng nhập thất bại.'));
+    } catch {
+      setAuthMessage('Không đăng nhập được. Kiểm tra kết nối mạng/server.');
+    } finally {
+      setAuthBusy(false);
+    }
+  };
+
+  const handleActivateLicense = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!licenseKeyCode.trim()) return;
+    setAuthBusy(true);
+    try {
+      const res = await apiFetch(`${NEST_BASE_URL}/client-auth/activate`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ keyCode: licenseKeyCode }),
+      });
+      const json = await res.json();
+      if (json.data) setClientAuth(json.data);
+      setAuthMessage(json.message || (json.success ? 'Kích hoạt bản quyền thành công.' : 'Kích hoạt bản quyền thất bại.'));
+      if (json.success) setLicenseKeyCode('');
+    } catch {
+      setAuthMessage('Không kích hoạt được key. Kiểm tra kết nối mạng/server.');
+    } finally {
+      setAuthBusy(false);
+    }
+  };
+
+  const handleClientLogout = async () => {
+    try {
+      const res = await apiFetch(`${NEST_BASE_URL}/client-auth/logout`, { method: 'POST' });
+      const json = await res.json();
+      setClientAuth(json.data || null);
+      setAuthMessage('Đã đăng xuất khỏi tài khoản bản quyền.');
+    } catch {
+      setAuthMessage('Không đăng xuất được.');
+    }
+  };
+
+  const handleSaveWebhookConfig = async () => {
+    if (!webhookUrl.trim()) {
+      setWebhookMessage('Nhập webhook URL trước khi lưu.');
+      return;
+    }
+    setWebhookBusy(true);
+    try {
+      const events = webhookEvents
+        .split(/\r?\n|,/)
+        .map((eventName) => eventName.trim())
+        .filter(Boolean);
+      const res = await apiFetch(`${NEST_BASE_URL}/client-auth/webhook/config`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          name: webhookName,
+          webhookUrl,
+          secretKey: webhookSecret,
+          isEnabled: webhookEnabled,
+          events,
+        }),
+      });
+      const json = await res.json();
+      setWebhookMessage(json.message || (json.success ? 'Đã lưu cấu hình webhook.' : 'Lưu webhook thất bại.'));
+    } catch {
+      setWebhookMessage('Không lưu được webhook. Kiểm tra quyền admin hoặc kết nối server.');
+    } finally {
+      setWebhookBusy(false);
+    }
+  };
+
+  const handleTestWebhook = async () => {
+    setWebhookBusy(true);
+    try {
+      const res = await apiFetch(`${NEST_BASE_URL}/client-auth/webhook/test`, { method: 'POST' });
+      const json = await res.json();
+      setWebhookMessage(json.message || (json.success ? 'Đã gửi test webhook.' : 'Test webhook thất bại.'));
+    } catch {
+      setWebhookMessage('Không test được webhook. Kiểm tra quyền admin hoặc cấu hình webhook.');
+    } finally {
+      setWebhookBusy(false);
     }
   };
 
@@ -577,6 +753,7 @@ export default function App() {
   };
 
   const handleOpenSingleChrome = async (acc: TikTokAccount) => {
+    if (!(await requireValidLicense())) return;
     if (window.electronAPI?.openAccountLoginWindow) {
       await window.electronAPI.openAccountLoginWindow(
         acc.id,
@@ -600,6 +777,7 @@ export default function App() {
       alert('Vui lòng chọn ít nhất 1 tài khoản để mở Chrome!');
       return;
     }
+    if (!(await requireValidLicense())) return;
 
     if (window.electronAPI?.openMultiAccountChromes) {
       const selectedAccObjects = accounts.filter((a) => selectedAccountIds.includes(a.id));
@@ -663,6 +841,158 @@ export default function App() {
     [selectedProxyIds, visibleProxyIds]
   );
 
+  const formatExpiry = (value?: string | null) => {
+    if (!value) return 'Chưa kích hoạt';
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) return value;
+    return date.toLocaleString();
+  };
+
+  if (authLoading) {
+    return (
+      <div className="app-root auth-shell">
+        <div className="auth-panel">
+          <div className="logo-badge">
+            <IconTiktok size={20} color="#ffffff" />
+          </div>
+          <h1>Đang kiểm tra bản quyền</h1>
+          <p>Đang kết nối server MKT Tikmax và xác thực thiết bị.</p>
+        </div>
+      </div>
+    );
+  }
+
+  if (!clientAuth?.authenticated) {
+    return (
+      <div className="app-root auth-shell">
+        <div className="auth-panel auth-panel-wide">
+          <div className="auth-panel-header">
+            <div className="logo-badge">
+              <IconTiktok size={20} color="#ffffff" />
+            </div>
+            <div>
+              <h1>MKT Tikmax License</h1>
+              <p>Đăng nhập tài khoản bản quyền để sử dụng phần mềm trên thiết bị này.</p>
+            </div>
+          </div>
+
+          {updateInfo?.hasUpdate && (
+            <div className={`auth-alert ${updateInfo.isMandatory ? 'warning' : 'info'}`}>
+              Có phiên bản mới {updateInfo.latestVersion}. {updateInfo.isMandatory ? 'Bản cập nhật này là bắt buộc.' : 'Bạn có thể cập nhật khi thuận tiện.'}
+            </div>
+          )}
+
+          <div className="auth-switch">
+            <button className={authMode === 'login' ? 'active' : ''} onClick={() => setAuthMode('login')}>
+              Đăng nhập
+            </button>
+            <button className={authMode === 'register' ? 'active' : ''} onClick={() => setAuthMode('register')}>
+              Đăng ký
+            </button>
+          </div>
+
+          {authMode === 'login' ? (
+            <form className="auth-form" onSubmit={handleClientLogin}>
+              <label className="input-group">
+                <span className="input-label">Username</span>
+                <input className="custom-input" value={authUsername} onChange={(e) => setAuthUsername(e.target.value)} required />
+              </label>
+              <label className="input-group">
+                <span className="input-label">Mật khẩu</span>
+                <input className="custom-input" type="password" value={authPassword} onChange={(e) => setAuthPassword(e.target.value)} required />
+              </label>
+              <button className="btn btn-primary" type="submit" disabled={authBusy}>
+                <IconKey size={15} />
+                <span>{authBusy ? 'Đang đăng nhập...' : 'Đăng nhập & khóa thiết bị'}</span>
+              </button>
+            </form>
+          ) : (
+            <form className="auth-form" onSubmit={handleClientRegister}>
+              <label className="input-group">
+                <span className="input-label">Username</span>
+                <input className="custom-input" value={authUsername} onChange={(e) => setAuthUsername(e.target.value)} required />
+              </label>
+              <label className="input-group">
+                <span className="input-label">Email</span>
+                <div className="auth-inline">
+                  <input className="custom-input" type="email" value={authEmail} onChange={(e) => setAuthEmail(e.target.value)} required />
+                  <button className="btn btn-secondary" type="button" onClick={handleSendRegisterOtp} disabled={authBusy}>
+                    <IconMail size={14} />
+                    <span>Gửi OTP</span>
+                  </button>
+                </div>
+              </label>
+              <label className="input-group">
+                <span className="input-label">Mật khẩu</span>
+                <input className="custom-input" type="password" value={authPassword} onChange={(e) => setAuthPassword(e.target.value)} required />
+              </label>
+              <label className="input-group">
+                <span className="input-label">Mã OTP</span>
+                <input className="custom-input" value={authOtpCode} onChange={(e) => setAuthOtpCode(e.target.value)} required />
+              </label>
+              <button className="btn btn-primary" type="submit" disabled={authBusy}>
+                <IconUsers size={15} />
+                <span>{authBusy ? 'Đang đăng ký...' : 'Tạo tài khoản'}</span>
+              </button>
+            </form>
+          )}
+
+          {authMessage && <div className="auth-alert">{authMessage}</div>}
+          <div className="auth-meta">AppCode: {clientAuth?.appCode || 'TIKMAX'}</div>
+        </div>
+      </div>
+    );
+  }
+
+  if (!clientAuth.licensed) {
+    return (
+      <div className="app-root auth-shell">
+        <div className="auth-panel auth-panel-wide">
+          <div className="auth-panel-header">
+            <div className="logo-badge">
+              <IconKey size={20} color="#ffffff" />
+            </div>
+            <div>
+              <h1>Kích hoạt bản quyền TIKMAX</h1>
+              <p>
+                {clientAuth.blocked
+                  ? `Tài khoản @${clientAuth.user?.username || 'user'} đã bị khóa hoặc không còn hoạt động.`
+                  : `Tài khoản @${clientAuth.user?.username || 'user'} chưa có bản quyền hợp lệ trên thiết bị này.`}
+              </p>
+            </div>
+          </div>
+
+          {!clientAuth.blocked && (
+            <form className="auth-form" onSubmit={handleActivateLicense}>
+              <label className="input-group">
+                <span className="input-label">Mã key bản quyền</span>
+                <input
+                  className="custom-input"
+                  placeholder="TIKMAX-30D-YZA1-9982"
+                  value={licenseKeyCode}
+                  onChange={(e) => setLicenseKeyCode(e.target.value)}
+                  required
+                />
+              </label>
+              <button className="btn btn-primary" type="submit" disabled={authBusy}>
+                <IconKey size={15} />
+                <span>{authBusy ? 'Đang kích hoạt...' : 'Kích hoạt key'}</span>
+              </button>
+            </form>
+          )}
+
+          {(authMessage || clientAuth.message) && <div className="auth-alert warning">{authMessage || clientAuth.message}</div>}
+          <div className="auth-footer-row">
+            <span>Hết hạn: {formatExpiry(clientAuth.expiresAt)}</span>
+            <button className="btn btn-secondary btn-sm" onClick={handleClientLogout}>
+              Đăng xuất
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="app-root">
       {/* Header Bar */}
@@ -690,6 +1020,10 @@ export default function App() {
             <span>Proxy:</span>
             <span className="header-metric-val">{proxies.length}</span>
           </div>
+          <div className="header-metric license-metric">
+            <span>@{clientAuth.user?.username || 'user'}</span>
+            <span className="header-metric-val">{formatExpiry(clientAuth.expiresAt)}</span>
+          </div>
 
           {/* Nest Status */}
           <div className={`status-badge ${nestStatus ? 'online' : 'offline'}`}>
@@ -700,6 +1034,9 @@ export default function App() {
           </div>
 
           {/* Theme Toggle Button */}
+          <button className="btn btn-secondary btn-sm" onClick={handleClientLogout}>
+            Đăng xuất
+          </button>
           <ThemeToggle theme={theme} onToggle={toggleTheme} />
         </div>
       </header>
@@ -1094,22 +1431,6 @@ export default function App() {
                                   >
                                     <IconPlay size={12} />
                                     <span>Chrome</span>
-                                  </button>
-                                  <button
-                                    className="btn-action-icon"
-                                    style={{ color: 'var(--accent-purple)' }}
-                                    onClick={() => handleTestGenerate2FA(acc)}
-                                    title="Tính toán thử nghiệm mã 2FA TOTP 6 số"
-                                  >
-                                    <IconKey size={13} />
-                                  </button>
-                                  <button
-                                    className="btn-action-icon"
-                                    style={{ color: 'var(--accent-amber)' }}
-                                    onClick={() => handleTestFetchOtp(acc)}
-                                    title="Thử nghiệm đọc OTP 6 số từ hòm thư"
-                                  >
-                                    <IconMail size={13} />
                                   </button>
                                   <button
                                     className="btn-action-icon danger"
@@ -1568,6 +1889,10 @@ export default function App() {
                         alert('Vui lòng chọn ít nhất 1 tài khoản ở Tab Quản Lý Tài Khoản trước khi chạy seeding!');
                         return;
                       }
+                      if (!(await requireValidLicense())) {
+                        setActiveTab('accounts');
+                        return;
+                      }
                       setIsTaskExecuting(true);
                       setActiveTab('logs');
                       try {
@@ -1621,6 +1946,54 @@ export default function App() {
               ========================================================================= */}
           {activeTab === 'logs' && (
             <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem', flex: 1, minHeight: 0 }}>
+              <div className="card-panel">
+                <div className="card-header">
+                  <h3 className="card-title">
+                    <span className="card-icon">
+                      <IconGlobe size={18} />
+                    </span>
+                    Webhook Auth Events
+                  </h3>
+                  <div className="toolbar-group">
+                    <button className="btn btn-secondary btn-sm" onClick={handleTestWebhook} disabled={webhookBusy}>
+                      Test
+                    </button>
+                    <button className="btn btn-primary btn-sm" onClick={handleSaveWebhookConfig} disabled={webhookBusy}>
+                      Lưu Webhook
+                    </button>
+                  </div>
+                </div>
+
+                <div className="webhook-grid">
+                  <label className="input-group">
+                    <span className="input-label">Tên cấu hình</span>
+                    <input className="custom-input" value={webhookName} onChange={(e) => setWebhookName(e.target.value)} />
+                  </label>
+                  <label className="input-group">
+                    <span className="input-label">Webhook URL</span>
+                    <input className="custom-input" value={webhookUrl} onChange={(e) => setWebhookUrl(e.target.value)} placeholder="https://api.example.com/webhooks/auth-events" />
+                  </label>
+                  <label className="input-group">
+                    <span className="input-label">Secret HMAC</span>
+                    <input className="custom-input" type="password" value={webhookSecret} onChange={(e) => setWebhookSecret(e.target.value)} />
+                  </label>
+                  <label className="checkbox-label" style={{ alignSelf: 'end', paddingBottom: '0.45rem' }}>
+                    <input
+                      type="checkbox"
+                      className="checkbox-custom"
+                      checked={webhookEnabled}
+                      onChange={(e) => setWebhookEnabled(e.target.checked)}
+                    />
+                    <span>Bật webhook</span>
+                  </label>
+                </div>
+                <label className="input-group">
+                  <span className="input-label">Events</span>
+                  <textarea className="textarea-custom" rows={3} value={webhookEvents} onChange={(e) => setWebhookEvents(e.target.value)} />
+                </label>
+                {webhookMessage && <div className="auth-alert">{webhookMessage}</div>}
+              </div>
+
               <div className="card-panel" style={{ flex: 1, minHeight: 0 }}>
                 <div className="card-header">
                   <div style={{ display: 'flex', alignItems: 'center', gap: '0.6rem' }}>

@@ -196,23 +196,6 @@ export async function autoFillTikTokLogin(win: BrowserWindow, usernameOrEmail: s
             inputEl.dispatchEvent(new Event('blur', { bubbles: true }));
           };
 
-          // If on Phone tab, try to click "Log in with email or username" switch link
-          const switchLink = Array.from(document.querySelectorAll('a, button, [role="button"], span, div, p')).find(el => {
-            if (!isVisible(el)) return false;
-            const txt = (el.innerText || el.textContent || '').trim().toLowerCase();
-            return txt.includes('log in with email') ||
-                   txt.includes('email or username') ||
-                   txt.includes('đăng nhập bằng email') ||
-                   txt.includes('dang nhap bang email') ||
-                   txt.includes('email / tên người dùng') ||
-                   txt.includes('email / ten nguoi dung');
-          });
-
-          if (switchLink) {
-            switchLink.click?.();
-            await new Promise(r => setTimeout(r, 600));
-          }
-
           const findInputs = () => {
             const emailSelectors = [
               'input[name="username"]',
@@ -253,10 +236,87 @@ export async function autoFillTikTokLogin(win: BrowserWindow, usernameOrEmail: s
             return { emailEl, passEl };
           };
 
+          // 1. KIỂM TRA XEM ĐÃ CÓ SẴN FORM EMAIL + PASSWORD CHƯA (Nếu có sẵn thì ĐIỀN LUÔN, không bấm gì khác!)
           let { emailEl, passEl } = findInputs();
 
+          // 2. NẾU CHƯA CÓ FORM ĐĂNG NHẬP THÌ MỚI ĐIỀU HƯỚNG / CHỌN KÊNH
           if (!emailEl || !passEl) {
-            await new Promise(r => setTimeout(r, 600));
+            // If on Channel Selection list modal (e.g. "Sử dụng số điện thoại hoặc email" / "Use phone / email / username")
+            const channelItems = Array.from(document.querySelectorAll('[data-e2e="channel-item"], [role="link"], div, a')).filter(isVisible);
+            const emailChannelItem = channelItems.find(el => {
+              const txt = (el.innerText || el.textContent || el.getAttribute('aria-label') || '').trim().toLowerCase();
+              const href = (el.getAttribute('href') || '').toLowerCase();
+              const svgHtml = el.querySelector('svg')?.innerHTML || '';
+
+              if (svgHtml.includes('M24 3a10 10') || svgHtml.includes('16 44h16c7')) return true;
+              if (href.includes('/phone-or-email') || href.includes('/login/phone')) return true;
+
+              const isEmailOrPhoneText =
+                txt.includes('số điện thoại') || txt.includes('so dien thoai') ||
+                txt.includes('phone') || txt.includes('email') || txt.includes('username') ||
+                txt.includes('use phone') || txt.includes('teléfono') || txt.includes('telefone') ||
+                txt.includes('téléphone') || txt.includes('телефон') || txt.includes('電話') ||
+                txt.includes('전화') || txt.includes('โทรศัพท์');
+
+              const isThirdParty =
+                txt.includes('google') || txt.includes('facebook') || txt.includes('apple') ||
+                txt.includes('qr') || txt.includes('twitter') || txt.includes('kakaotalk') || txt.includes('line');
+
+              return isEmailOrPhoneText && !isThirdParty;
+            });
+
+            if (emailChannelItem) {
+              emailChannelItem.click?.();
+              await new Promise(r => setTimeout(r, 600));
+            }
+
+            // If on Phone tab / Phone modal variant, click "Username or email" tab or switch link
+            const isForgetPassword = (href, txt) => {
+              return href.includes('forget-password') || href.includes('forgot-password') ||
+                     txt.includes('forget') || txt.includes('forgot') ||
+                     txt.includes('quên mật khẩu') || txt.includes('quen mat khau') ||
+                     txt.includes('olvidaste') || txt.includes('oublié');
+            };
+
+            const isEmailTabOrLink = (el) => {
+              if (!isVisible(el)) return false;
+              const txt = (el.innerText || el.textContent || el.getAttribute('aria-label') || '').trim().toLowerCase();
+              const href = (el.getAttribute('href') || '').toLowerCase();
+
+              // Tuyệt đối không click vào Forgot password!
+              if (isForgetPassword(href, txt)) return false;
+
+              // Không bấm vào tab Phone hiện tại
+              if (txt === 'phone' || txt === 'điện thoại') return false;
+
+              return href.includes('/login/phone-or-email/email') ||
+                     txt === 'username or email' ||
+                     txt === 'email or username' ||
+                     txt === 'username / email' ||
+                     txt === 'email / username' ||
+                     txt === 'username' ||
+                     txt === 'email' ||
+                     (txt.includes('username') && txt.includes('email')) ||
+                     (txt.includes('email') && txt.includes('username')) ||
+                     (txt.includes('email') && txt.includes('tên')) ||
+                     (txt.includes('email') && txt.includes('tiktok id')) ||
+                     txt.includes('sử dụng email') ||
+                     txt.includes('su dung email') ||
+                     txt.includes('log in with email') ||
+                     txt.includes('đăng nhập bằng email') ||
+                     txt.includes('dang nhap bang email');
+            };
+
+            const switchLink = Array.from(document.querySelectorAll(
+              'a[href*="/login/phone-or-email/email"], [role="tab"], button, [role="button"], span, div, a, p'
+            )).find(isEmailTabOrLink);
+
+            if (switchLink) {
+              switchLink.click?.();
+              await new Promise(r => setTimeout(r, 600));
+            }
+
+            // Quét lại input sau khi chuyển màn hình
             const retry = findInputs();
             emailEl = retry.emailEl;
             passEl = retry.passEl;
@@ -795,16 +855,38 @@ export async function monitorLoginFlow(
                 return { type: 'FORM_READY' };
               }
 
-              // 2. Check if on Phone tab (has switch link "Log in with email or username")
-              const switchLink = Array.from(document.querySelectorAll('a, button, [role="button"], span, div, p')).find(el => {
+              // 2. Check if on Phone tab / variant (has tab/switch link "Username or email" / "Log in with email or username")
+              const isForgetPassword = (href, txt) => {
+                return href.includes('forget-password') || href.includes('forgot-password') ||
+                       txt.includes('forget') || txt.includes('forgot') ||
+                       txt.includes('quên mật khẩu') || txt.includes('quen mat khau') ||
+                       txt.includes('olvidaste') || txt.includes('oublié');
+              };
+
+              const switchLink = Array.from(document.querySelectorAll('a[href*="/login/phone-or-email/email"], [role="tab"], button, [role="button"], span, div, a, p')).find(el => {
                 if (!isVisible(el)) return false;
-                const txt = (el.innerText || el.textContent || '').trim().toLowerCase();
-                return txt.includes('log in with email') ||
-                       txt.includes('email or username') ||
+                const txt = (el.innerText || el.textContent || el.getAttribute('aria-label') || '').trim().toLowerCase();
+                const href = (el.getAttribute('href') || '').toLowerCase();
+
+                if (isForgetPassword(href, txt)) return false;
+                if (txt === 'phone' || txt === 'điện thoại') return false;
+
+                return href.includes('/login/phone-or-email/email') ||
+                       txt === 'username or email' ||
+                       txt === 'email or username' ||
+                       txt === 'username / email' ||
+                       txt === 'email / username' ||
+                       txt === 'username' ||
+                       txt === 'email' ||
+                       (txt.includes('username') && txt.includes('email')) ||
+                       (txt.includes('email') && txt.includes('username')) ||
+                       (txt.includes('email') && txt.includes('tên')) ||
+                       (txt.includes('email') && txt.includes('tiktok id')) ||
+                       txt.includes('sử dụng email') ||
+                       txt.includes('su dung email') ||
+                       txt.includes('log in with email') ||
                        txt.includes('đăng nhập bằng email') ||
-                       txt.includes('dang nhap bang email') ||
-                       txt.includes('email / tên người dùng') ||
-                       txt.includes('email / ten nguoi dung');
+                       txt.includes('dang nhap bang email');
               });
 
               if (switchLink) {

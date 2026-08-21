@@ -31,8 +31,17 @@ export function setupAutomationIPC(
   onLog: (log: Omit<TaskLogItem, 'id' | 'timestamp'>) => void,
   onAccountStatusChange: (id: string, status: AccountStatus) => void,
   onAccountSessionUpdate: (id: string, update: AccountSessionUpdate) => void,
-  onSeedingStateChange?: (state: SeedingStateChange) => void
+  onSeedingStateChange?: (state: SeedingStateChange) => void,
+  ensureClientLicensed?: () => Promise<{ ok: boolean; message?: string }>
 ) {
+  const assertClientLicensed = async () => {
+    if (!ensureClientLicensed) return;
+    const result = await ensureClientLicensed();
+    if (!result.ok) {
+      throw new Error(result.message || 'Bản quyền chưa hợp lệ.');
+    }
+  };
+
   ipcMain.handle('close-all-browser-windows', async () => {
     let closedCount = 0;
     const windows = new Set<BrowserWindow>([
@@ -79,6 +88,8 @@ export function setupAutomationIPC(
       twoFactor?: string,
       muteBrowserAudio: boolean = true
     ) => {
+      await assertClientLicensed();
+
       if (loginWindows.has(accountId)) {
         const existingWin = loginWindows.get(accountId)!;
         if (!existingWin.isDestroyed()) {
@@ -202,6 +213,8 @@ export function setupAutomationIPC(
   ipcMain.handle(
     'open-multi-account-chromes',
     async (_event, accountIds: string[], maxThreads: number = 10, accountsData: any[], muteBrowserAudio: boolean = true) => {
+      await assertClientLicensed();
+
       const selectedAccounts = accountsData.filter(a => accountIds.includes(a.id));
       if (selectedAccounts.length === 0) {
         return { success: false, message: 'No valid accounts selected' };
@@ -377,6 +390,8 @@ export function setupAutomationIPC(
   ipcMain.handle(
     'execute-seeding-task',
     async (_event, config: SeedingTaskConfig, accounts: Array<AccountInfo & { proxy?: string; proxyType?: string }>) => {
+      await assertClientLicensed();
+
       onLog({
         level: 'info',
         message: `🚀 Bắt đầu tác vụ Seeding trên ${config.targetType.toUpperCase()}: ${config.targetUrl}`,
