@@ -14,7 +14,6 @@ import {
   getSeedingCancelReason,
   isSeedingCancelRequested,
   performVideoSeeding,
-  requestSeedingCancel,
   runSessionPreparation,
   throwIfSeedingCancelled,
   waitForSeedingDelay,
@@ -36,6 +35,7 @@ import {
 import { solveTikTokWebCaptchaWithOmo } from './captcha-solver';
 import { performLivestreamSeeding } from './tiktok-live-actions';
 import { ensureAuthenticatedForSeeding, renewTikTokSessionForSeeding } from './tiktok-login-flow';
+import { runWithAutomationRetry } from './retry-policy';
 
 export const seedingWindows = new Set<BrowserWindow>();
 
@@ -78,6 +78,26 @@ export async function executeTaskForAccount(
   }
 
   const needsVideoCommentLayout = config.targetType === 'video' && !!config.comments?.some(comment => comment.trim().length > 0);
+  if (config.targetType === 'livestream') {
+    // Intercept and abort heavy video stream chunks to save CPU/RAM while keeping WebSocket room chat & like buttons active
+    customSession.webRequest.onBeforeRequest({ urls: ['*://*/*'] }, (details, callback) => {
+      const url = details.url.toLowerCase();
+      const isMediaStream =
+        details.resourceType === 'media' ||
+        url.includes('.flv') ||
+        url.includes('.m3u8') ||
+        url.includes('pull.tiktokcdn.com') ||
+        url.includes('live-pull') ||
+        url.includes('byteoversea.com/live/') ||
+        url.includes('v16m-default.akamaized.net');
+
+      if (isMediaStream) {
+        return callback({ cancel: true });
+      }
+      callback({ cancel: false });
+    });
+  }
+
   const win = new BrowserWindow({
     ...getTiledSeedingWindowBounds(windowSlot, needsVideoCommentLayout),
     show: true,
@@ -90,6 +110,18 @@ export async function executeTaskForAccount(
       backgroundThrottling: false,
     },
   });
+
+  win.webContents.on('dom-ready', () => {
+    win.webContents.executeJavaScript(`
+      try {
+        Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+        if (window.chrome && !window.chrome.runtime) {
+          window.chrome.runtime = {};
+        }
+      } catch(e) {}
+    `).catch(() => undefined);
+  });
+
   if (needsVideoCommentLayout) {
     win.setMinimumSize(TILED_VIDEO_COMMENT_MIN_WIDTH, TILED_VIDEO_COMMENT_MIN_HEIGHT);
   }
@@ -122,7 +154,13 @@ export async function executeTaskForAccount(
 
     // If closed manually by user while task was actively running:
     if (isTaskRunning) {
-      requestSeedingCancel(`Người dùng đã đóng cửa sổ seeding đang chạy của @${acc.username}.`);
+      onLog({
+        accountId: acc.id,
+        accountUsername: acc.username,
+        level: 'warning',
+        message: `[WindowLifecycle] Cửa sổ seeding của @${acc.username} đã đóng, chỉ dừng worker này và tiếp tục các tài khoản còn lại.`,
+      });
+
       if (seedingWindows.size === 0 && isSeedingCancelRequested()) {
         onLog({
           accountId: acc.id,
@@ -323,9 +361,21 @@ export async function executeTaskForAccount(
 
     // Execute Seeding according to target type
     if (config.targetType === 'video') {
-      await performVideoSeeding(win, acc, config, onLog);
+      await runWithAutomationRetry(
+        win,
+        acc,
+        onLog,
+        { label: 'Video seeding', maxAttempts: 3, baseDelayMs: 1800, maxDelayMs: 7000 },
+        () => performVideoSeeding(win, acc, config, onLog)
+      );
     } else if (config.targetType === 'livestream') {
-      await performLivestreamSeeding(win, acc, config, onLog);
+      await runWithAutomationRetry(
+        win,
+        acc,
+        onLog,
+        { label: 'Livestream seeding', maxAttempts: 2, baseDelayMs: 2000, maxDelayMs: 7000 },
+        () => performLivestreamSeeding(win, acc, config, onLog)
+      );
     }
 
     await waitForSeedingDelay(SEEDING_POST_ACTION_STABILIZE_MS, win);

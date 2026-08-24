@@ -26,6 +26,7 @@ import { executeTaskForAccount, seedingWindows } from './automation/account-task
 
 // Map of active login windows
 const loginWindows = new Map<string, BrowserWindow>();
+const SEEDING_WINDOW_CLOSED_MESSAGE = 'Seeding browser window was closed.';
 
 export function setupAutomationIPC(
   onLog: (log: Omit<TaskLogItem, 'id' | 'timestamp'>) => void,
@@ -457,6 +458,17 @@ export function setupAutomationIPC(
             });
           } catch (err: any) {
             if (err instanceof SeedingCancelledError) {
+              if (!isSeedingCancelRequested() && err.message === SEEDING_WINDOW_CLOSED_MESSAGE) {
+                completedCount++;
+                onLog({
+                  accountId: acc.id,
+                  accountUsername: acc.username,
+                  level: 'warning',
+                  message: `[Worker ${workerIndex + 1}] Dung worker cho @${acc.username}: cua so seeding da dong. Tiep tuc tai khoan ke tiep (${completedCount}/${selectedAccounts.length}).`,
+                });
+                continue;
+              }
+
               requestSeedingCancel(err.message);
               onLog({
                 accountId: acc.id,

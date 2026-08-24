@@ -112,22 +112,40 @@ export async function tapLiveContinuously(
 
   const endAt = Date.now() + liveDurationSeconds * 1000;
   let tapCount = 0;
+  let tapsInCurrentBurst = 0;
+  let targetBurstSize = 10 + Math.floor(Math.random() * 15); // Human-like burst of 10-24 taps
 
   while (Date.now() < endAt && !win.isDestroyed()) {
+    throwIfSeedingCancelled(win);
+
     const tapPoint = await getLiveTapPoint(win);
 
     if (tapPoint && typeof tapPoint.x === 'number' && typeof tapPoint.y === 'number') {
       const zoomFactor = win.webContents.getZoomFactor();
-      const tapX = Math.max(1, Math.round(tapPoint.x * zoomFactor));
-      const tapY = Math.max(1, Math.round(tapPoint.y * zoomFactor));
+      const baseTapX = Math.max(1, Math.round(tapPoint.x * zoomFactor));
+      const baseTapY = Math.max(1, Math.round(tapPoint.y * zoomFactor));
 
-      win.webContents.sendInputEvent({ type: 'mouseMove', x: tapX, y: tapY });
-      win.webContents.sendInputEvent({ type: 'mouseDown', x: tapX, y: tapY, button: 'left', clickCount: 1 });
-      win.webContents.sendInputEvent({ type: 'mouseUp', x: tapX, y: tapY, button: 'left', clickCount: 1 });
+      // Natural spatial jitter (±4px) around center of heart button
+      const jitterX = Math.max(1, baseTapX + Math.floor((Math.random() - 0.5) * 8));
+      const jitterY = Math.max(1, baseTapY + Math.floor((Math.random() - 0.5) * 8));
+
+      win.webContents.sendInputEvent({ type: 'mouseMove', x: jitterX, y: jitterY });
+      win.webContents.sendInputEvent({ type: 'mouseDown', x: jitterX, y: jitterY, button: 'left', clickCount: 1 });
+      win.webContents.sendInputEvent({ type: 'mouseUp', x: jitterX, y: jitterY, button: 'left', clickCount: 1 });
       tapCount++;
+      tapsInCurrentBurst++;
+
+      // After completing a burst, take a natural micro-pause like human fingers
+      if (tapsInCurrentBurst >= targetBurstSize) {
+        tapsInCurrentBurst = 0;
+        targetBurstSize = 10 + Math.floor(Math.random() * 15);
+        await waitForSeedingDelay(350 + Math.random() * 400, win).catch(() => undefined);
+        continue;
+      }
     }
 
-    await new Promise(res => setTimeout(res, 90 + Math.random() * 60));
+    // Fast cadence within burst (80ms - 130ms)
+    await waitForSeedingDelay(80 + Math.random() * 50, win).catch(() => undefined);
   }
 
   onLog({

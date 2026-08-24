@@ -1,4 +1,5 @@
 import { BrowserWindow } from 'electron';
+import * as crypto from 'crypto';
 import * as fs from 'fs';
 import * as path from 'path';
 import { TaskLogItem } from '../nest/automation/automation.interface';
@@ -15,6 +16,15 @@ export type OmoTikTokWebTaskType =
   | 'TiktokRotateWebTask'
   | 'TiktokSelectObjectWebTask'
   | 'Tiktok3DSelectObjectWebTask';
+
+interface CaptchaStabilityProbe {
+  found: boolean;
+  loading?: boolean;
+  signature?: string;
+  rect?: { x: number; y: number; width: number; height: number };
+  reason?: string;
+  error?: string;
+}
 
 export function getOmoCaptchaApiKey(): string {
   if (process.env.OMOCAPTCHA_API_KEY && process.env.OMOCAPTCHA_API_KEY.trim()) {
@@ -47,6 +57,169 @@ export async function postOmoCaptcha(payload: any): Promise<any> {
     body: JSON.stringify(payload),
   });
   return res.json();
+}
+
+async function getCaptchaStabilityProbe(win: BrowserWindow): Promise<CaptchaStabilityProbe> {
+  if (win.isDestroyed()) return { found: false, reason: 'window-destroyed' };
+
+  return win.webContents.executeJavaScript(`
+    (() => {
+      try {
+        const isVisible = (el) => {
+          if (!el) return false;
+          const rect = el.getBoundingClientRect();
+          const style = window.getComputedStyle(el);
+          return rect.width > 20 && rect.height > 20 && style.visibility !== 'hidden' && style.display !== 'none' && style.opacity !== '0';
+        };
+
+        const normalize = (s) => String(s || '').toLowerCase()
+          .normalize('NFD')
+          .replace(/[\\u0300-\\u036f]/g, '')
+          .replace(/đ/g, 'd')
+          .replace(/Đ/g, 'D')
+          .replace(/\\s+/g, ' ')
+          .trim();
+
+        const isModalBox = (el) => {
+          if (!isVisible(el)) return false;
+          const r = el.getBoundingClientRect();
+          return r.width >= 200 && r.height >= 160 && r.width <= 780 && r.height <= 780;
+        };
+
+        const selectors = [
+          '#captcha-verify-container',
+          '.captcha-verify-container',
+          '#captcha_verify_container',
+          '.captcha_verify_container',
+          '.sec-captcha-container',
+          '.captcha-container',
+          '.verify-wrap',
+          '[class*="captcha-card" i]',
+          '[class*="captcha-modal" i]',
+          '[class*="captcha_card" i]',
+          '[class*="captcha_modal" i]',
+          'iframe[src*="captcha"]',
+          'iframe[src*="sec"]',
+          'iframe[src*="verify"]',
+          'iframe[src*="challenge"]',
+          '[id*="captcha" i]',
+          '[class*="captcha" i]'
+        ];
+
+        const candidates = selectors.flatMap(sel => Array.from(document.querySelectorAll(sel)));
+        const captchaBox = candidates.find(isModalBox) || candidates.find(isVisible);
+        if (!captchaBox) return { found: false, reason: 'captcha-not-found' };
+
+        const boxRect = captchaBox.getBoundingClientRect();
+        const bodyText = normalize(document.body?.innerText || '');
+        const boxText = normalize(captchaBox.innerText || captchaBox.textContent || '');
+        const loading = /loading|please wait|dang tai|đang tải|spinner|placeholder/.test(bodyText + ' ' + boxText);
+
+        const images = Array.from(captchaBox.querySelectorAll('img')).filter(isVisible).map((img) => {
+          const rect = img.getBoundingClientRect();
+          return {
+            src: img.currentSrc || img.src || '',
+            complete: !!img.complete,
+            naturalWidth: img.naturalWidth || 0,
+            naturalHeight: img.naturalHeight || 0,
+            rect: {
+              x: Math.round(rect.left),
+              y: Math.round(rect.top),
+              width: Math.round(rect.width),
+              height: Math.round(rect.height)
+            }
+          };
+        });
+
+        const slider = Array.from(captchaBox.querySelectorAll('[role="slider"], [class*="slide" i], [class*="drag" i]'))
+          .filter(isVisible)
+          .map((el) => {
+            const rect = el.getBoundingClientRect();
+            return {
+              x: Math.round(rect.left),
+              y: Math.round(rect.top),
+              width: Math.round(rect.width),
+              height: Math.round(rect.height)
+            };
+          })[0] || null;
+
+        const imageStillLoading = images.some(img => !img.complete || img.naturalWidth <= 0 || img.naturalHeight <= 0);
+        const rect = {
+          x: Math.max(0, Math.round(boxRect.left)),
+          y: Math.max(0, Math.round(boxRect.top)),
+          width: Math.max(20, Math.round(boxRect.width)),
+          height: Math.max(20, Math.round(boxRect.height))
+        };
+
+        return {
+          found: true,
+          loading: loading || imageStillLoading,
+          rect,
+          signature: JSON.stringify({
+            rect,
+            text: boxText.slice(0, 240),
+            images,
+            slider
+          })
+        };
+      } catch(e) {
+        return { found: false, reason: 'probe-error', error: String(e) };
+      }
+    })();
+  `).catch(err => ({ found: false, reason: 'probe-eval-failed', error: String(err) }));
+}
+
+async function waitForStableCaptchaSnapshot(
+  win: BrowserWindow,
+  options: { timeoutMs?: number; sampleIntervalMs?: number; stableSamples?: number } = {}
+): Promise<boolean> {
+  const timeoutMs = options.timeoutMs ?? 6500;
+  const sampleIntervalMs = options.sampleIntervalMs ?? 450;
+  const requiredStableSamples = options.stableSamples ?? 2;
+  const deadline = Date.now() + timeoutMs;
+  let lastFingerprint = '';
+  let stableSamples = 0;
+
+  while (Date.now() < deadline) {
+    if (win.isDestroyed() || isSeedingCancelRequested()) return false;
+
+    const probe = await getCaptchaStabilityProbe(win);
+    if (!probe.found || !probe.rect || probe.loading) {
+      lastFingerprint = '';
+      stableSamples = 0;
+      await waitForSeedingDelay(sampleIntervalMs, win).catch(() => undefined);
+      continue;
+    }
+
+    let visualHash = '';
+    try {
+      const image = await win.webContents.capturePage({
+        x: probe.rect.x,
+        y: probe.rect.y,
+        width: probe.rect.width,
+        height: probe.rect.height,
+      });
+      visualHash = crypto.createHash('sha256').update(image.toPNG()).digest('hex');
+    } catch (err) {
+      visualHash = `capture-failed:${String(err)}`;
+    }
+
+    const fingerprint = `${probe.signature || ''}:${visualHash}`;
+    if (fingerprint === lastFingerprint) {
+      stableSamples++;
+    } else {
+      lastFingerprint = fingerprint;
+      stableSamples = 1;
+    }
+
+    if (stableSamples >= requiredStableSamples) {
+      return true;
+    }
+
+    await waitForSeedingDelay(sampleIntervalMs, win).catch(() => undefined);
+  }
+
+  return false;
 }
 
 export async function solveTikTokWebCaptchaWithOmo(
@@ -85,6 +258,23 @@ export async function solveTikTokWebCaptchaWithOmo(
           message: `[Captcha] 🔄 Thử giải lại CAPTCHA (Lần ${attempt}/${maxAttempts}) cho @${acc.username}...`,
         });
         await waitForSeedingDelay(1500, win);
+      }
+
+      const captchaStable = await waitForStableCaptchaSnapshot(win);
+      if (captchaStable) {
+        onLog({
+          accountId: acc.id,
+          accountUsername: acc.username,
+          level: 'info',
+          message: `[Captcha] Khung CAPTCHA đã ổn định, bắt đầu chụp ảnh gửi OmoCaptcha cho @${acc.username}.`,
+        });
+      } else if (attempt === 1) {
+        onLog({
+          accountId: acc.id,
+          accountUsername: acc.username,
+          level: 'warning',
+          message: `[Captcha] Khung CAPTCHA chưa ổn định sau vài giây; vẫn tiếp tục chụp theo trạng thái hiện tại để tránh kẹt task.`,
+        });
       }
 
       const captchaData = await win.webContents.executeJavaScript(`

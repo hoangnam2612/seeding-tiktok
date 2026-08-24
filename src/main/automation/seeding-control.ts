@@ -1115,8 +1115,25 @@ export async function performVideoSeeding(
   config: SeedingTaskConfig,
   onLog: (log: Omit<TaskLogItem, 'id' | 'timestamp'>) => void
 ): Promise<void> {
+  // Natural Watch Time: watch video for 5-9 seconds to register valid view count and avoid instantaneous bot flag
+  const naturalWatchSeconds = 5 + Math.floor(Math.random() * 5);
+  onLog({
+    accountId: acc.id,
+    accountUsername: acc.username,
+    level: 'info',
+    message: `⏳ [Watch] Đang ngâm xem video ${naturalWatchSeconds}s cho @${acc.username} để tăng trust trước khi tương tác...`,
+  });
+
+  const watchEnd = Date.now() + naturalWatchSeconds * 1000;
+  while (Date.now() < watchEnd && !win.isDestroyed()) {
+    throwIfSeedingCancelled(win);
+    await waitForSeedingDelay(Math.min(1500, Math.max(200, watchEnd - Date.now())), win);
+  }
+  throwIfSeedingCancelled(win);
+
   if (config.likeEnabled) {
     await performVideoLike(win, acc, onLog);
+    await waitForSeedingDelay(800 + Math.random() * 800, win);
   }
 
   await checkAndSolveAnyCaptcha(win, acc, onLog);
