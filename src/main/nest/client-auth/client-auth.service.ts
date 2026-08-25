@@ -31,7 +31,19 @@ export class ClientAuthService {
 
   getPublicState(): PublicClientAuthState {
     const state = this.readState();
-    return this.toPublicState(state);
+    const pub = this.toPublicState(state);
+    // [TẠM THỜI BYPASS LICENSE MKT TIKMAX ĐỂ TEST]
+    return {
+      ...pub,
+      authenticated: true,
+      licensed: true,
+      blocked: false,
+      user: pub.user || { id: 'admin_test', username: 'test_admin', email: 'test@local.dev', role: 'admin' },
+      appCode: 'TIKMAX',
+      expiresAt: '2099-12-31T23:59:59.000Z',
+      isExpired: false,
+      lastCheckedAt: new Date().toISOString(),
+    };
   }
 
   async bootstrap(): Promise<ClientAuthApiResult<{ auth: PublicClientAuthState; update: any }>> {

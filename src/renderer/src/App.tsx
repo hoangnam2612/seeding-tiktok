@@ -169,7 +169,15 @@ export default function App() {
   const [muteBrowserAudio, setMuteBrowserAudio] = useState<boolean>(true);
   const [omocaptchaApiKey, setOmocaptchaApiKey] = useState<string>('');
   const [isTaskExecuting, setIsTaskExecuting] = useState<boolean>(false);
-  const [clientAuth, setClientAuth] = useState<ClientAuthState | null>(null);
+  const [clientAuth, setClientAuth] = useState<ClientAuthState | null>({
+    authenticated: true,
+    licensed: true,
+    blocked: false,
+    user: { id: 'admin', username: 'admin', email: 'admin@local.dev' },
+    appCode: 'TIKMAX',
+    expiresAt: null,
+    isExpired: false,
+  });
   const [authLoading, setAuthLoading] = useState<boolean>(true);
   const [authMode, setAuthMode] = useState<'login' | 'register'>('login');
   const [authUsername, setAuthUsername] = useState<string>('');
@@ -321,19 +329,7 @@ export default function App() {
   };
 
   const requireValidLicense = async (): Promise<boolean> => {
-    const nextAuth = await refreshClientAuth();
-    if (!nextAuth?.authenticated) {
-      setAuthMessage('Vui lòng đăng nhập tài khoản MKT Tikmax trước.');
-      return false;
-    }
-    if (nextAuth.blocked) {
-      setAuthMessage(nextAuth.message || 'Tài khoản đã bị khóa hoặc không còn hoạt động.');
-      return false;
-    }
-    if (!nextAuth.licensed) {
-      setAuthMessage('Bản quyền TIKMAX chưa kích hoạt hoặc đã hết hạn.');
-      return false;
-    }
+    // [TẠM THỜI BYPASS KIỂM TRA BẢN QUYỀN ĐỂ TEST]
     return true;
   };
 
@@ -848,150 +844,154 @@ export default function App() {
     return date.toLocaleString();
   };
 
-  if (authLoading) {
-    return (
-      <div className="app-root auth-shell">
-        <div className="auth-panel">
-          <div className="logo-badge">
-            <IconTiktok size={20} color="#ffffff" />
-          </div>
-          <h1>Đang kiểm tra bản quyền</h1>
-          <p>Đang kết nối server MKT Tikmax và xác thực thiết bị.</p>
-        </div>
-      </div>
-    );
-  }
-
-  if (!clientAuth?.authenticated) {
-    return (
-      <div className="app-root auth-shell">
-        <div className="auth-panel auth-panel-wide">
-          <div className="auth-panel-header">
+    /* =========================================================================
+     * [TẠM THỜI COMMENT MÀN HÌNH BẢN QUYỀN MKT TIKMAX ĐỂ TEST - MỞ LẠI KHI CẦN]
+     * =========================================================================
+    if (authLoading) {
+      return (
+        <div className="app-root auth-shell">
+          <div className="auth-panel">
             <div className="logo-badge">
               <IconTiktok size={20} color="#ffffff" />
             </div>
-            <div>
-              <h1>MKT Tikmax License</h1>
-              <p>Đăng nhập tài khoản bản quyền để sử dụng phần mềm trên thiết bị này.</p>
-            </div>
-          </div>
-
-          {updateInfo?.hasUpdate && (
-            <div className={`auth-alert ${updateInfo.isMandatory ? 'warning' : 'info'}`}>
-              Có phiên bản mới {updateInfo.latestVersion}. {updateInfo.isMandatory ? 'Bản cập nhật này là bắt buộc.' : 'Bạn có thể cập nhật khi thuận tiện.'}
-            </div>
-          )}
-
-          <div className="auth-switch">
-            <button className={authMode === 'login' ? 'active' : ''} onClick={() => setAuthMode('login')}>
-              Đăng nhập
-            </button>
-            <button className={authMode === 'register' ? 'active' : ''} onClick={() => setAuthMode('register')}>
-              Đăng ký
-            </button>
-          </div>
-
-          {authMode === 'login' ? (
-            <form className="auth-form" onSubmit={handleClientLogin}>
-              <label className="input-group">
-                <span className="input-label">Username</span>
-                <input className="custom-input" value={authUsername} onChange={(e) => setAuthUsername(e.target.value)} required />
-              </label>
-              <label className="input-group">
-                <span className="input-label">Mật khẩu</span>
-                <input className="custom-input" type="password" value={authPassword} onChange={(e) => setAuthPassword(e.target.value)} required />
-              </label>
-              <button className="btn btn-primary" type="submit" disabled={authBusy}>
-                <IconKey size={15} />
-                <span>{authBusy ? 'Đang đăng nhập...' : 'Đăng nhập & khóa thiết bị'}</span>
-              </button>
-            </form>
-          ) : (
-            <form className="auth-form" onSubmit={handleClientRegister}>
-              <label className="input-group">
-                <span className="input-label">Username</span>
-                <input className="custom-input" value={authUsername} onChange={(e) => setAuthUsername(e.target.value)} required />
-              </label>
-              <label className="input-group">
-                <span className="input-label">Email</span>
-                <div className="auth-inline">
-                  <input className="custom-input" type="email" value={authEmail} onChange={(e) => setAuthEmail(e.target.value)} required />
-                  <button className="btn btn-secondary" type="button" onClick={handleSendRegisterOtp} disabled={authBusy}>
-                    <IconMail size={14} />
-                    <span>Gửi OTP</span>
-                  </button>
-                </div>
-              </label>
-              <label className="input-group">
-                <span className="input-label">Mật khẩu</span>
-                <input className="custom-input" type="password" value={authPassword} onChange={(e) => setAuthPassword(e.target.value)} required />
-              </label>
-              <label className="input-group">
-                <span className="input-label">Mã OTP</span>
-                <input className="custom-input" value={authOtpCode} onChange={(e) => setAuthOtpCode(e.target.value)} required />
-              </label>
-              <button className="btn btn-primary" type="submit" disabled={authBusy}>
-                <IconUsers size={15} />
-                <span>{authBusy ? 'Đang đăng ký...' : 'Tạo tài khoản'}</span>
-              </button>
-            </form>
-          )}
-
-          {authMessage && <div className="auth-alert">{authMessage}</div>}
-          <div className="auth-meta">AppCode: {clientAuth?.appCode || 'TIKMAX'}</div>
-        </div>
-      </div>
-    );
-  }
-
-  if (!clientAuth.licensed) {
-    return (
-      <div className="app-root auth-shell">
-        <div className="auth-panel auth-panel-wide">
-          <div className="auth-panel-header">
-            <div className="logo-badge">
-              <IconKey size={20} color="#ffffff" />
-            </div>
-            <div>
-              <h1>Kích hoạt bản quyền TIKMAX</h1>
-              <p>
-                {clientAuth.blocked
-                  ? `Tài khoản @${clientAuth.user?.username || 'user'} đã bị khóa hoặc không còn hoạt động.`
-                  : `Tài khoản @${clientAuth.user?.username || 'user'} chưa có bản quyền hợp lệ trên thiết bị này.`}
-              </p>
-            </div>
-          </div>
-
-          {!clientAuth.blocked && (
-            <form className="auth-form" onSubmit={handleActivateLicense}>
-              <label className="input-group">
-                <span className="input-label">Mã key bản quyền</span>
-                <input
-                  className="custom-input"
-                  placeholder="TIKMAX-30D-YZA1-9982"
-                  value={licenseKeyCode}
-                  onChange={(e) => setLicenseKeyCode(e.target.value)}
-                  required
-                />
-              </label>
-              <button className="btn btn-primary" type="submit" disabled={authBusy}>
-                <IconKey size={15} />
-                <span>{authBusy ? 'Đang kích hoạt...' : 'Kích hoạt key'}</span>
-              </button>
-            </form>
-          )}
-
-          {(authMessage || clientAuth.message) && <div className="auth-alert warning">{authMessage || clientAuth.message}</div>}
-          <div className="auth-footer-row">
-            <span>Hết hạn: {formatExpiry(clientAuth.expiresAt)}</span>
-            <button className="btn btn-secondary btn-sm" onClick={handleClientLogout}>
-              Đăng xuất
-            </button>
+            <h1>Đang kiểm tra bản quyền</h1>
+            <p>Đang kết nối server MKT Tikmax và xác thực thiết bị.</p>
           </div>
         </div>
-      </div>
-    );
-  }
+      );
+    }
+
+    if (!clientAuth?.authenticated) {
+      return (
+        <div className="app-root auth-shell">
+          <div className="auth-panel auth-panel-wide">
+            <div className="auth-panel-header">
+              <div className="logo-badge">
+                <IconTiktok size={20} color="#ffffff" />
+              </div>
+              <div>
+                <h1>MKT Tikmax License</h1>
+                <p>Đăng nhập tài khoản bản quyền để sử dụng phần mềm trên thiết bị này.</p>
+              </div>
+            </div>
+
+            {updateInfo?.hasUpdate && (
+              <div className={`auth-alert ${updateInfo.isMandatory ? 'warning' : 'info'}`}>
+                Có phiên bản mới {updateInfo.latestVersion}. {updateInfo.isMandatory ? 'Bản cập nhật này là bắt buộc.' : 'Bạn có thể cập nhật khi thuận tiện.'}
+              </div>
+            )}
+
+            <div className="auth-switch">
+              <button className={authMode === 'login' ? 'active' : ''} onClick={() => setAuthMode('login')}>
+                Đăng nhập
+              </button>
+              <button className={authMode === 'register' ? 'active' : ''} onClick={() => setAuthMode('register')}>
+                Đăng ký
+              </button>
+            </div>
+
+            {authMode === 'login' ? (
+              <form className="auth-form" onSubmit={handleClientLogin}>
+                <label className="input-group">
+                  <span className="input-label">Username</span>
+                  <input className="custom-input" value={authUsername} onChange={(e) => setAuthUsername(e.target.value)} required />
+                </label>
+                <label className="input-group">
+                  <span className="input-label">Mật khẩu</span>
+                  <input className="custom-input" type="password" value={authPassword} onChange={(e) => setAuthPassword(e.target.value)} required />
+                </label>
+                <button className="btn btn-primary" type="submit" disabled={authBusy}>
+                  <IconKey size={15} />
+                  <span>{authBusy ? 'Đang đăng nhập...' : 'Đăng nhập & khóa thiết bị'}</span>
+                </button>
+              </form>
+            ) : (
+              <form className="auth-form" onSubmit={handleClientRegister}>
+                <label className="input-group">
+                  <span className="input-label">Username</span>
+                  <input className="custom-input" value={authUsername} onChange={(e) => setAuthUsername(e.target.value)} required />
+                </label>
+                <label className="input-group">
+                  <span className="input-label">Email</span>
+                  <div className="auth-inline">
+                    <input className="custom-input" type="email" value={authEmail} onChange={(e) => setAuthEmail(e.target.value)} required />
+                    <button className="btn btn-secondary" type="button" onClick={handleSendRegisterOtp} disabled={authBusy}>
+                      <IconMail size={14} />
+                      <span>Gửi OTP</span>
+                    </button>
+                  </div>
+                </label>
+                <label className="input-group">
+                  <span className="input-label">Mật khẩu</span>
+                  <input className="custom-input" type="password" value={authPassword} onChange={(e) => setAuthPassword(e.target.value)} required />
+                </label>
+                <label className="input-group">
+                  <span className="input-label">Mã OTP</span>
+                  <input className="custom-input" value={authOtpCode} onChange={(e) => setAuthOtpCode(e.target.value)} required />
+                </label>
+                <button className="btn btn-primary" type="submit" disabled={authBusy}>
+                  <IconUsers size={15} />
+                  <span>{authBusy ? 'Đang đăng ký...' : 'Tạo tài khoản'}</span>
+                </button>
+              </form>
+            )}
+
+            {authMessage && <div className="auth-alert">{authMessage}</div>}
+            <div className="auth-meta">AppCode: {clientAuth?.appCode || 'TIKMAX'}</div>
+          </div>
+        </div>
+      );
+    }
+
+    if (!clientAuth.licensed) {
+      return (
+        <div className="app-root auth-shell">
+          <div className="auth-panel auth-panel-wide">
+            <div className="auth-panel-header">
+              <div className="logo-badge">
+                <IconKey size={20} color="#ffffff" />
+              </div>
+              <div>
+                <h1>Kích hoạt bản quyền TIKMAX</h1>
+                <p>
+                  {clientAuth.blocked
+                    ? `Tài khoản @${clientAuth.user?.username || 'user'} đã bị khóa hoặc không còn hoạt động.`
+                    : `Tài khoản @${clientAuth.user?.username || 'user'} chưa có bản quyền hợp lệ trên thiết bị này.`}
+                </p>
+              </div>
+            </div>
+
+            {!clientAuth.blocked && (
+              <form className="auth-form" onSubmit={handleActivateLicense}>
+                <label className="input-group">
+                  <span className="input-label">Mã key bản quyền</span>
+                  <input
+                    className="custom-input"
+                    placeholder="TIKMAX-30D-YZA1-9982"
+                    value={licenseKeyCode}
+                    onChange={(e) => setLicenseKeyCode(e.target.value)}
+                    required
+                  />
+                </label>
+                <button className="btn btn-primary" type="submit" disabled={authBusy}>
+                  <IconKey size={15} />
+                  <span>{authBusy ? 'Đang kích hoạt...' : 'Kích hoạt key'}</span>
+                </button>
+              </form>
+            )}
+
+            {(authMessage || clientAuth.message) && <div className="auth-alert warning">{authMessage || clientAuth.message}</div>}
+            <div className="auth-footer-row">
+              <span>Hết hạn: {formatExpiry(clientAuth.expiresAt)}</span>
+              <button className="btn btn-secondary btn-sm" onClick={handleClientLogout}>
+                Đăng xuất
+              </button>
+            </div>
+          </div>
+        </div>
+      );
+    }
+    ========================================================================= */
 
   return (
     <div className="app-root">
@@ -1021,8 +1021,8 @@ export default function App() {
             <span className="header-metric-val">{proxies.length}</span>
           </div>
           <div className="header-metric license-metric">
-            <span>@{clientAuth.user?.username || 'user'}</span>
-            <span className="header-metric-val">{formatExpiry(clientAuth.expiresAt)}</span>
+            <span>@{clientAuth?.user?.username || 'admin'}</span>
+            <span className="header-metric-val">{formatExpiry(clientAuth?.expiresAt)}</span>
           </div>
 
           {/* Nest Status */}
