@@ -129,7 +129,22 @@ export function setupAutomationIPC(
     return { success: true, count: closedChromes };
   });
 
-  // 4. Execute Seeding Task across accounts (real Google Chrome / Puppeteer engine)
+  // 4. Realign / Tile all active Chrome windows (Chrome View)
+  ipcMain.handle('realign-active-chromes', async () => {
+    const count = await chromeProfileManager.relayoutActiveProfiles();
+    onLog({
+      level: 'info',
+      message: `📐 Đã gom và sắp xếp lại lưới cho ${count} cửa sổ Chrome.`,
+    });
+    return { success: true, count };
+  });
+
+  // 5. Get active Chromes count
+  ipcMain.handle('get-active-chromes-count', async () => {
+    return { count: chromeProfileManager.getActiveCount() };
+  });
+
+  // 6. Execute Seeding Task across accounts (real Google Chrome / Puppeteer engine)
   ipcMain.handle(
     'execute-seeding-task',
     async (_event, config: SeedingTaskConfig, accounts: Array<AccountInfo & { proxy?: string; proxyType?: string }>) => {

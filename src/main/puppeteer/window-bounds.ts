@@ -1,4 +1,5 @@
 import { screen } from 'electron';
+import { getStoredAppSettings } from '../nest/app.service';
 
 export interface WindowBounds {
   x: number;
@@ -7,68 +8,76 @@ export interface WindowBounds {
   height: number;
 }
 
-// Real Google Chrome windows are normal top-level windows again.
-// Use an adaptive grid so windows stay large enough for Chrome's real min size.
-export const CHROME_WINDOW_WIDTH = 620;
-export const CHROME_WINDOW_HEIGHT = 620;
-export const CHROME_DEVICE_SCALE = 1;
-export const TIKTOK_INNER_CONTENT_ZOOM = '1';
-const MAX_GRID_COLUMNS = 4;
-const MAX_GRID_ROWS = 2;
-const MIN_BROWSER_WIDTH = 300;
+export interface CalculateBoundsOptions {
+  width?: number;
+  height?: number;
+  maxColumns?: number;
+}
+
+// Default Google Chrome window dimensions (Mobile-like proportion similar to MKT TikPro)
+export const CHROME_WINDOW_WIDTH = 360;
+export const CHROME_WINDOW_HEIGHT = 480;
+export const CHROME_DEVICE_SCALE = 0.65;
+export const TIKTOK_INNER_CONTENT_ZOOM = '0.75';
+const DEFAULT_MAX_GRID_COLUMNS = 4;
+const MIN_BROWSER_WIDTH = 240;
 const MIN_BROWSER_HEIGHT = 150;
-const MAX_BROWSER_HEIGHT = 1080;
-const GRID_GAP = 4;
+const GRID_GAP = 8;
 const GRID_MARGIN = 4;
-const OVERFLOW_OFFSET = 30;
+const CHROME_LAYOUT_WIDTH_PADDING = 10;
+const CHROME_LAYOUT_HEIGHT_PADDING = 10;
 
 /**
  * Calculates window position and dimensions for multi-profile Chrome instances.
- * Guarantees zero overlap with 20px separation gap between windows.
+ * Dynamically uses the configured browser size and column count from settings.
  */
 export function calculateProfileWindowBounds(
   slotIndex: number,
-  hostBounds?: WindowBounds
+  options?: CalculateBoundsOptions
 ): WindowBounds {
-  let workArea = { x: 0, y: 0, width: 1920, height: 1040 };
+  const primaryDisplay = screen.getPrimaryDisplay();
+  const workArea = primaryDisplay?.workArea;
 
-  if (hostBounds) {
-    workArea = hostBounds;
-  } else {
-    try {
-      const primaryDisplay = screen.getPrimaryDisplay();
-      if (primaryDisplay?.workArea) {
-        workArea = primaryDisplay.workArea;
-      }
-    } catch {
-      // Fallback
-    }
+  if (!workArea) {
+    throw new Error('Unable to determine primary display work area.');
   }
 
-  const columns = MAX_GRID_COLUMNS;
-  const rows = MAX_GRID_ROWS;
+  const settings = getStoredAppSettings();
+  const targetWidth = options?.width || settings.chromeWindowWidth || CHROME_WINDOW_WIDTH;
+  const targetHeight = options?.height || settings.chromeWindowHeight || CHROME_WINDOW_HEIGHT;
+  const maxGridColumns = Math.max(1, options?.maxColumns || settings.chromeGridColumns || DEFAULT_MAX_GRID_COLUMNS);
 
-  // 1. Dùng MIN_BROWSER_WIDTH, MIN_BROWSER_HEIGHT, MAX_BROWSER_HEIGHT để clamp kích thước
-  const calculatedWidth = Math.floor((workArea.width - GRID_MARGIN * 2 - GRID_GAP * (columns - 1)) / columns);
-  const calculatedHeight = Math.floor((workArea.height - GRID_MARGIN * 2 - GRID_GAP * (rows - 1)) / rows);
+  const availableWidth = Math.max(MIN_BROWSER_WIDTH, workArea.width - GRID_MARGIN * 2);
+  const availableHeight = Math.max(MIN_BROWSER_HEIGHT, workArea.height - GRID_MARGIN * 2);
 
-  const width = Math.max(MIN_BROWSER_WIDTH, calculatedWidth);
-  const height = Math.max(MIN_BROWSER_HEIGHT, Math.min(MAX_BROWSER_HEIGHT, calculatedHeight));
+  const width = Math.max(MIN_BROWSER_WIDTH, Math.min(targetWidth, availableWidth));
+  const height = Math.max(MIN_BROWSER_HEIGHT, Math.min(targetHeight, availableHeight));
+  const layoutWidth = Math.min(availableWidth, width + CHROME_LAYOUT_WIDTH_PADDING);
+  const layoutHeight = Math.min(availableHeight, height + CHROME_LAYOUT_HEIGHT_PADDING);
 
-  // 2. Dùng OVERFLOW_OFFSET khi slotIndex vượt quá 1 màn hình
-  const totalVisibleSlots = columns * rows;
+  const columns = Math.max(
+    1,
+    Math.min(
+      maxGridColumns,
+      Math.floor((availableWidth + GRID_GAP) / (layoutWidth + GRID_GAP))
+    )
+  );
+  const rows = Math.max(
+    1,
+    Math.floor((availableHeight + GRID_GAP) / (layoutHeight + GRID_GAP))
+  );
+
+  const totalVisibleSlots = Math.max(1, columns * rows);
   const slotInGrid = slotIndex % totalVisibleSlots;
-  const cycle = Math.floor(slotIndex / totalVisibleSlots);
-  const cycleOffset = cycle * OVERFLOW_OFFSET;
 
   const col = slotInGrid % columns;
   const row = Math.floor(slotInGrid / columns);
 
-  const rawX = workArea.x + GRID_MARGIN + col * (width + GRID_GAP) + cycleOffset;
-  const rawY = workArea.y + GRID_MARGIN + row * (height + GRID_GAP) + cycleOffset;
+  const rawX = workArea.x + GRID_MARGIN + col * (layoutWidth + GRID_GAP);
+  const rawY = workArea.y + GRID_MARGIN + row * (layoutHeight + GRID_GAP);
 
-  const maxX = workArea.x + workArea.width - width - GRID_MARGIN;
-  const maxY = workArea.y + workArea.height - height - GRID_MARGIN;
+  const maxX = workArea.x + workArea.width - layoutWidth - GRID_MARGIN;
+  const maxY = workArea.y + workArea.height - layoutHeight - GRID_MARGIN;
 
   return {
     width,
@@ -77,6 +86,7 @@ export function calculateProfileWindowBounds(
     y: Math.min(Math.max(rawY, workArea.y), Math.max(workArea.y, maxY)),
   };
 }
+
 /**
  * Slot Manager that tracks occupied slots and assigns the smallest available slot index
  */

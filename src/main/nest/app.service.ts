@@ -7,6 +7,46 @@ import { decryptSecret, encryptSecret, hasEncryptedSecret } from '../secret-json
 
 export interface AppSettings {
   omocaptchaApiKey?: string;
+  chromeWindowPreset?: string;
+  chromeWindowWidth?: number;
+  chromeWindowHeight?: number;
+  chromeGridColumns?: number;
+  chromeScaleFactor?: number;
+}
+
+export function getStoredAppSettings(): AppSettings {
+  try {
+    const dataDir = ensurePersistentDataDir();
+    const settingsFilePath = path.join(dataDir, 'settings.json');
+    if (!fs.existsSync(settingsFilePath)) {
+      return {
+        chromeWindowPreset: '360x480',
+        chromeWindowWidth: 360,
+        chromeWindowHeight: 480,
+        chromeGridColumns: 4,
+        chromeScaleFactor: 0.65,
+      };
+    }
+    const settings = JSON.parse(fs.readFileSync(settingsFilePath, 'utf-8'));
+    return {
+      chromeWindowPreset: settings.chromeWindowPreset || '360x480',
+      chromeWindowWidth: settings.chromeWindowWidth || 360,
+      chromeWindowHeight: settings.chromeWindowHeight || 480,
+      chromeGridColumns: settings.chromeGridColumns || 4,
+      chromeScaleFactor: settings.chromeScaleFactor !== undefined ? settings.chromeScaleFactor : 0.65,
+      ...settings,
+      omocaptchaApiKey: decryptSecret(settings.omocaptchaApiKey),
+    };
+  } catch (err) {
+    console.error('[AppService] Failed to read stored settings:', err);
+    return {
+      chromeWindowPreset: '360x480',
+      chromeWindowWidth: 360,
+      chromeWindowHeight: 480,
+      chromeGridColumns: 4,
+      chromeScaleFactor: 0.65,
+    };
+  }
 }
 
 @Injectable()
@@ -22,9 +62,22 @@ export class AppService {
   getSettings(): AppSettings {
     try {
       this.ensureDataDir();
-      if (!fs.existsSync(this.settingsFilePath)) return {};
+      if (!fs.existsSync(this.settingsFilePath)) {
+        return {
+          chromeWindowPreset: '360x480',
+          chromeWindowWidth: 360,
+          chromeWindowHeight: 480,
+          chromeGridColumns: 4,
+          chromeScaleFactor: 0.65,
+        };
+      }
       const settings = JSON.parse(fs.readFileSync(this.settingsFilePath, 'utf-8'));
-      const decryptedSettings = {
+      const decryptedSettings: AppSettings = {
+        chromeWindowPreset: settings.chromeWindowPreset || '360x480',
+        chromeWindowWidth: settings.chromeWindowWidth || 360,
+        chromeWindowHeight: settings.chromeWindowHeight || 480,
+        chromeGridColumns: settings.chromeGridColumns || 4,
+        chromeScaleFactor: settings.chromeScaleFactor !== undefined ? settings.chromeScaleFactor : 0.65,
         ...settings,
         omocaptchaApiKey: decryptSecret(settings.omocaptchaApiKey),
       };
@@ -38,7 +91,13 @@ export class AppService {
       return decryptedSettings;
     } catch (err) {
       console.error('[AppService] Failed to read settings:', err);
-      return {};
+      return {
+        chromeWindowPreset: '360x480',
+        chromeWindowWidth: 360,
+        chromeWindowHeight: 480,
+        chromeGridColumns: 4,
+        chromeScaleFactor: 0.65,
+      };
     }
   }
 
@@ -47,7 +106,12 @@ export class AppService {
     const current = this.getSettings();
     const next: AppSettings = {
       ...current,
-      omocaptchaApiKey: settings.omocaptchaApiKey?.trim() || '',
+      omocaptchaApiKey: settings.omocaptchaApiKey !== undefined ? settings.omocaptchaApiKey.trim() : (current.omocaptchaApiKey || ''),
+      chromeWindowPreset: settings.chromeWindowPreset || current.chromeWindowPreset || '360x480',
+      chromeWindowWidth: Number(settings.chromeWindowWidth) || current.chromeWindowWidth || 360,
+      chromeWindowHeight: Number(settings.chromeWindowHeight) || current.chromeWindowHeight || 480,
+      chromeGridColumns: Number(settings.chromeGridColumns) || current.chromeGridColumns || 4,
+      chromeScaleFactor: settings.chromeScaleFactor !== undefined ? Number(settings.chromeScaleFactor) : (current.chromeScaleFactor ?? 0.65),
     };
     const storageSettings: AppSettings = {
       ...next,

@@ -15,6 +15,7 @@ import { autoFillTikTokLoginCredentials } from './auto-login';
 import { AccountSessionUpdate } from '../automation/session-profile';
 import { TaskLogItem } from '../nest/automation/automation.interface';
 import { AccountStatus } from '../automation/types';
+import { chromeViewBridge } from '../native/chrome-view-bridge';
 
 export interface ActiveProfileInstance {
   accountId: string;
@@ -65,19 +66,25 @@ export class ChromeProfileManager {
     return Array.from(this.activeProfiles.keys());
   }
 
-  public relayoutActiveProfiles(): void {
-    const totalWindows = Math.max(1, this.activeProfiles.size);
+  /**
+   * Gom và hiển thị cửa sổ Chrome View (Tiled Grid Form)
+   */
+  public async relayoutActiveProfiles(): Promise<number> {
+    try {
+      chromeViewBridge.showView();
+    } catch {}
+
+    let count = 0;
     for (const instance of this.activeProfiles.values()) {
       if (!instance.browser.connected || instance.page.isClosed()) continue;
-      const bounds = calculateProfileWindowBounds(
-        instance.windowSlot,
-        undefined,
-        undefined,
-        undefined,
-        totalWindows
-      );
-      applyChromeWindowBounds(instance.page, bounds).catch(() => {});
+      try {
+        const bounds = calculateProfileWindowBounds(instance.windowSlot);
+        await applyChromeWindowBounds(instance.page, bounds).catch(() => {});
+        await instance.page.bringToFront().catch(() => {});
+        count++;
+      } catch {}
     }
+    return count;
   }
 
   /**
@@ -97,7 +104,7 @@ export class ChromeProfileManager {
       if (existing.browser.connected && !existing.page.isClosed()) {
         try {
           await existing.page.bringToFront();
-          this.relayoutActiveProfiles();
+          await this.relayoutActiveProfiles();
           onLog({
             accountId,
             accountUsername: username,
@@ -116,7 +123,7 @@ export class ChromeProfileManager {
       accountId,
       accountUsername: username,
       level: 'info',
-      message: `🚀 Đang khởi chạy Google Chrome thật (Profile riêng) cho @${username || accountId} ${proxy ? '[Proxy: ' + proxy + ']' : ''}...`,
+      message: `🚀 Đang khởi chạy App Mode cho @${username || accountId} ${proxy ? '[Proxy: ' + proxy + ']' : ''}...`,
     });
 
     try {
@@ -142,13 +149,17 @@ export class ChromeProfileManager {
         windowSlot,
       };
       this.activeProfiles.set(accountId, instance);
-      this.relayoutActiveProfiles();
+      await this.relayoutActiveProfiles();
 
       // Handle browser disconnect or manual window close
       const handleClose = async () => {
         if (!this.activeProfiles.has(accountId)) return;
         this.activeProfiles.delete(accountId);
         windowSlotManager.releaseSlot(accountId);
+
+        try {
+          chromeViewBridge.removeChrome(instance.windowSlot);
+        } catch {}
 
         try {
           // Check final cookies before cleanup
@@ -211,7 +222,7 @@ export class ChromeProfileManager {
           accountId,
           accountUsername: username,
           level: 'warning',
-          message: `⚠️ Điều hướng trang TikTok mất nhiều thời gian: ${err?.message || 'Timeout'}. Bạn vẫn có thể thao tác bình thường.`,
+          message: `⚠️ Điều hướng trang TikTok: ${err?.message || 'Timeout'}. Bạn vẫn có thể thao tác bình thường.`,
         });
       }
 
@@ -282,6 +293,10 @@ export class ChromeProfileManager {
     this.activeProfiles.delete(accountId);
     windowSlotManager.releaseSlot(accountId);
     try {
+      chromeViewBridge.removeChrome(instance.windowSlot);
+    } catch {}
+
+    try {
       if (instance.browser.connected) {
         await instance.browser.close();
       }
@@ -300,6 +315,10 @@ export class ChromeProfileManager {
     const instances = Array.from(this.activeProfiles.values());
     this.activeProfiles.clear();
     windowSlotManager.clear();
+
+    try {
+      chromeViewBridge.clear();
+    } catch {}
 
     for (const inst of instances) {
       try {

@@ -6,7 +6,7 @@ import { injectCookiesIntoPuppeteerPage, extractTikTokCookieString, checkTikTokL
 import { autoFillTikTokLoginCredentials } from './auto-login';
 import { performPuppeteerVideoSeeding } from './video-seeding';
 import { performPuppeteerLiveSeeding } from './live-seeding';
-import { WindowBounds, windowSlotManager } from './window-bounds';
+import { windowSlotManager } from './window-bounds';
 
 export interface SeedingAccountData {
   id: string;
@@ -24,7 +24,6 @@ export class PuppeteerSeedingEngine {
   private static instance: PuppeteerSeedingEngine;
   private isRunning = false;
   private cancelRequested = false;
-  private hostBoundsProvider?: () => WindowBounds | undefined;
 
   public static getInstance(): PuppeteerSeedingEngine {
     if (!PuppeteerSeedingEngine.instance) {
@@ -39,10 +38,6 @@ export class PuppeteerSeedingEngine {
 
   public isCancelled(): boolean {
     return this.cancelRequested;
-  }
-
-  public setHostBoundsProvider(provider: () => WindowBounds | undefined): void {
-    this.hostBoundsProvider = provider;
   }
 
   /**
@@ -112,7 +107,6 @@ export class PuppeteerSeedingEngine {
             proxyType: acc.proxyType || 'http',
             muteAudio: true,
             windowSlot: slot,
-            hostBounds: this.hostBoundsProvider?.(),
             layoutWindowCount: effectiveMaxThreads,
           });
           browserInstance = browser;

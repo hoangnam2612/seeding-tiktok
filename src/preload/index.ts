@@ -20,6 +20,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
   openMultiAccountChromes: (accountIds: string[], maxThreads: number, accountsData: any[], muteBrowserAudio?: boolean) =>
     ipcRenderer.invoke('open-multi-account-chromes', accountIds, maxThreads, accountsData, muteBrowserAudio),
   closeAllBrowserWindows: () => ipcRenderer.invoke('close-all-browser-windows'),
+  realignActiveChromes: () => ipcRenderer.invoke('realign-active-chromes'),
+  getActiveChromesCount: () => ipcRenderer.invoke('get-active-chromes-count'),
   executeSeedingTask: (config: any, accounts: any[]) =>
     ipcRenderer.invoke('execute-seeding-task', config, accounts),
   onSeedingStateChanged: (callback: (state: any) => void) => {

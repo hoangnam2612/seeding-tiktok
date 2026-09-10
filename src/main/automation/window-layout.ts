@@ -1,15 +1,16 @@
 import { BrowserWindow, screen } from 'electron';
+import { getStoredAppSettings } from '../nest/app.service';
 
-const TILED_LOGIN_TARGET_WIDTH = 430;
-const TILED_LOGIN_TARGET_HEIGHT = 320;
-const TILED_LOGIN_MIN_WIDTH = 420;
-const TILED_LOGIN_MIN_HEIGHT = 300;
+const TILED_LOGIN_TARGET_WIDTH = 360;
+const TILED_LOGIN_TARGET_HEIGHT = 480;
+const TILED_LOGIN_MIN_WIDTH = 240;
+const TILED_LOGIN_MIN_HEIGHT = 200;
 const TILED_LOGIN_GAP = 6;
 const TILED_LOGIN_OVERFLOW_OFFSET = 24;
-const TILED_SEEDING_TARGET_WIDTH = 430;
-const TILED_SEEDING_TARGET_HEIGHT = 320;
-const TILED_SEEDING_MIN_WIDTH = 420;
-const TILED_SEEDING_MIN_HEIGHT = 300;
+const TILED_SEEDING_TARGET_WIDTH = 360;
+const TILED_SEEDING_TARGET_HEIGHT = 480;
+const TILED_SEEDING_MIN_WIDTH = 240;
+const TILED_SEEDING_MIN_HEIGHT = 200;
 const TILED_VIDEO_COMMENT_TARGET_WIDTH = TILED_SEEDING_TARGET_WIDTH;
 const TILED_VIDEO_COMMENT_TARGET_HEIGHT = TILED_SEEDING_TARGET_HEIGHT;
 export const TILED_VIDEO_COMMENT_MIN_WIDTH = TILED_SEEDING_MIN_WIDTH;
@@ -18,8 +19,13 @@ export const TIKTOK_SEEDING_ZOOM = 0.52;
 
 export function getTiledLoginWindowBounds(slotIndex: number) {
   const workArea = screen.getPrimaryDisplay().workArea;
-  const columns = Math.max(1, Math.floor((workArea.width + TILED_LOGIN_GAP) / (TILED_LOGIN_TARGET_WIDTH + TILED_LOGIN_GAP)));
-  const rows = Math.max(1, Math.floor((workArea.height + TILED_LOGIN_GAP) / (TILED_LOGIN_TARGET_HEIGHT + TILED_LOGIN_GAP)));
+  const settings = getStoredAppSettings();
+  const targetWidth = settings.chromeWindowWidth || TILED_LOGIN_TARGET_WIDTH;
+  const targetHeight = settings.chromeWindowHeight || TILED_LOGIN_TARGET_HEIGHT;
+  const maxGridColumns = settings.chromeGridColumns || 4;
+
+  const columns = Math.max(1, Math.min(maxGridColumns, Math.floor((workArea.width + TILED_LOGIN_GAP) / (targetWidth + TILED_LOGIN_GAP))));
+  const rows = Math.max(1, Math.floor((workArea.height + TILED_LOGIN_GAP) / (targetHeight + TILED_LOGIN_GAP)));
   const width = Math.max(
     TILED_LOGIN_MIN_WIDTH,
     Math.floor((workArea.width - TILED_LOGIN_GAP * (columns + 1)) / columns)
@@ -49,11 +55,16 @@ export function getTiledLoginWindowBounds(slotIndex: number) {
 
 export function getTiledSeedingWindowBounds(slotIndex: number, preferVideoCommentLayout = false) {
   const workArea = screen.getPrimaryDisplay().workArea;
-  const targetWidth = preferVideoCommentLayout ? TILED_VIDEO_COMMENT_TARGET_WIDTH : TILED_SEEDING_TARGET_WIDTH;
-  const targetHeight = preferVideoCommentLayout ? TILED_VIDEO_COMMENT_TARGET_HEIGHT : TILED_SEEDING_TARGET_HEIGHT;
+  const settings = getStoredAppSettings();
+  const defaultTargetWidth = preferVideoCommentLayout ? TILED_VIDEO_COMMENT_TARGET_WIDTH : TILED_SEEDING_TARGET_WIDTH;
+  const defaultTargetHeight = preferVideoCommentLayout ? TILED_VIDEO_COMMENT_TARGET_HEIGHT : TILED_SEEDING_TARGET_HEIGHT;
+  const targetWidth = settings.chromeWindowWidth || defaultTargetWidth;
+  const targetHeight = settings.chromeWindowHeight || defaultTargetHeight;
+  const maxGridColumns = settings.chromeGridColumns || 4;
+
   const minWidth = preferVideoCommentLayout ? TILED_VIDEO_COMMENT_MIN_WIDTH : TILED_SEEDING_MIN_WIDTH;
   const minHeight = preferVideoCommentLayout ? TILED_VIDEO_COMMENT_MIN_HEIGHT : TILED_SEEDING_MIN_HEIGHT;
-  const columns = Math.max(1, Math.floor((workArea.width + TILED_LOGIN_GAP) / (targetWidth + TILED_LOGIN_GAP)));
+  const columns = Math.max(1, Math.min(maxGridColumns, Math.floor((workArea.width + TILED_LOGIN_GAP) / (targetWidth + TILED_LOGIN_GAP))));
   const rows = Math.max(1, Math.floor((workArea.height + TILED_LOGIN_GAP) / (targetHeight + TILED_LOGIN_GAP)));
   const width = Math.max(
     minWidth,

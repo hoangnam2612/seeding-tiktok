@@ -16,6 +16,8 @@ import {
   IconRefresh,
   IconVolumeMute,
   IconTiktok,
+  IconSettings,
+  IconMonitor,
 } from './components/Icons';
 import { StatusBadge } from './components/StatusBadge';
 import { ThemeToggle } from './components/ThemeToggle';
@@ -49,6 +51,8 @@ declare global {
         muteBrowserAudio?: boolean
       ) => Promise<any>;
       closeAllBrowserWindows: () => Promise<any>;
+      realignActiveChromes?: () => Promise<any>;
+      getActiveChromesCount?: () => Promise<{ count: number }>;
       executeSeedingTask: (config: any, accounts: any[]) => Promise<any>;
       onSeedingStateChanged?: (
         callback: (state: { isRunning: boolean; canceled?: boolean; reason?: string }) => void
@@ -78,7 +82,7 @@ export default function App() {
   };
 
   // Navigation State
-  const [activeTab, setActiveTab] = useState<'accounts' | 'proxies' | 'seeding' | 'logs'>('accounts');
+  const [activeTab, setActiveTab] = useState<'accounts' | 'proxies' | 'seeding' | 'logs' | 'settings'>('accounts');
 
   // Server & System Status
   const [nestStatus, setNestStatus] = useState<any>(null);
@@ -168,6 +172,13 @@ export default function App() {
   const [liveDurationSeconds, setLiveDurationSeconds] = useState<number>(60);
   const [muteBrowserAudio, setMuteBrowserAudio] = useState<boolean>(true);
   const [omocaptchaApiKey, setOmocaptchaApiKey] = useState<string>('');
+  const [chromeWindowPreset, setChromeWindowPreset] = useState<string>('360x480');
+  const [chromeWindowWidth, setChromeWindowWidth] = useState<number>(360);
+  const [chromeWindowHeight, setChromeWindowHeight] = useState<number>(480);
+  const [chromeGridColumns, setChromeGridColumns] = useState<number>(4);
+  const [chromeScaleFactor, setChromeScaleFactor] = useState<number>(0.65);
+  const [settingsSaveMessage, setSettingsSaveMessage] = useState<string>('');
+  const [settingsBusy, setSettingsBusy] = useState<boolean>(false);
   const [isTaskExecuting, setIsTaskExecuting] = useState<boolean>(false);
   const [clientAuth, setClientAuth] = useState<ClientAuthState | null>({
     authenticated: true,
@@ -275,10 +286,71 @@ export default function App() {
       const res = await apiFetch(`${NEST_BASE_URL}/settings`);
       if (res.ok) {
         const json = await res.json();
-        setOmocaptchaApiKey(json.data?.omocaptchaApiKey || '');
+        const data = json.data || {};
+        setOmocaptchaApiKey(data.omocaptchaApiKey || '');
+        setChromeWindowPreset(data.chromeWindowPreset || '360x480');
+        setChromeWindowWidth(Number(data.chromeWindowWidth) || 360);
+        setChromeWindowHeight(Number(data.chromeWindowHeight) || 480);
+        setChromeGridColumns(Number(data.chromeGridColumns) || 4);
+        setChromeScaleFactor(data.chromeScaleFactor !== undefined ? Number(data.chromeScaleFactor) : 0.65);
       }
     } catch (err) {
       console.error('Failed to fetch settings:', err);
+    }
+  };
+
+  const handlePresetChange = (preset: string) => {
+    setChromeWindowPreset(preset);
+    if (preset === '360x480') {
+      setChromeWindowWidth(360);
+      setChromeWindowHeight(480);
+    } else if (preset === '320x480') {
+      setChromeWindowWidth(320);
+      setChromeWindowHeight(480);
+    } else if (preset === '360x640') {
+      setChromeWindowWidth(360);
+      setChromeWindowHeight(640);
+    } else if (preset === '475x300') {
+      setChromeWindowWidth(475);
+      setChromeWindowHeight(300);
+    } else if (preset === '640x360') {
+      setChromeWindowWidth(640);
+      setChromeWindowHeight(360);
+    } else if (preset === '1280x720') {
+      setChromeWindowWidth(1280);
+      setChromeWindowHeight(720);
+    } else if (preset === '1920x1080') {
+      setChromeWindowWidth(1920);
+      setChromeWindowHeight(1080);
+    }
+  };
+
+  const handleSaveAllSettings = async () => {
+    setSettingsBusy(true);
+    setSettingsSaveMessage('');
+    try {
+      const res = await apiFetch(`${NEST_BASE_URL}/settings`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          omocaptchaApiKey,
+          chromeWindowPreset,
+          chromeWindowWidth: Number(chromeWindowWidth) || 360,
+          chromeWindowHeight: Number(chromeWindowHeight) || 480,
+          chromeGridColumns: Number(chromeGridColumns) || 4,
+          chromeScaleFactor: Number(chromeScaleFactor) || 0.65,
+        }),
+      });
+      if (res.ok) {
+        setSettingsSaveMessage('Đã lưu thành công cấu hình hệ thống!');
+        setTimeout(() => setSettingsSaveMessage(''), 3500);
+      } else {
+        setSettingsSaveMessage('Lưu cấu hình thất bại.');
+      }
+    } catch (err) {
+      setSettingsSaveMessage('Lỗi khi kết nối server.');
+    } finally {
+      setSettingsBusy(false);
     }
   };
 
@@ -800,6 +872,23 @@ export default function App() {
     alert(`Đã đóng ${result?.closedCount || 0} trình duyệt.`);
   };
 
+  const handleRealignChromes = async () => {
+    if (!window.electronAPI?.realignActiveChromes) {
+      alert('Chức năng gom cửa sổ yêu cầu ứng dụng Electron Desktop');
+      return;
+    }
+    try {
+      const res = await window.electronAPI.realignActiveChromes();
+      if (res?.count) {
+        alert(`📐 Đã gom và sắp xếp lại ${res.count} cửa sổ Chrome theo lưới chuẩn!`);
+      } else {
+        alert('Hiện không có cửa sổ Chrome nào đang mở.');
+      }
+    } catch (err) {
+      console.error('Failed to realign chromes:', err);
+    }
+  };
+
   const handleClearLogs = async () => {
     try {
       const res = await apiFetch(`${NEST_BASE_URL}/automation/logs`, { method: 'DELETE' });
@@ -1033,6 +1122,17 @@ export default function App() {
             </span>
           </div>
 
+          {/* Chrome View Realign Button */}
+          <button
+            className="btn btn-secondary btn-sm"
+            onClick={handleRealignChromes}
+            title="Gom và sắp xếp lại tất cả các cửa sổ Chrome theo lưới chuẩn"
+            style={{ display: 'flex', alignItems: 'center', gap: '0.35rem' }}
+          >
+            <IconMonitor size={14} />
+            <span>Gom Cửa Sổ</span>
+          </button>
+
           {/* Theme Toggle Button */}
           <button className="btn btn-secondary btn-sm" onClick={handleClientLogout}>
             Đăng xuất
@@ -1095,6 +1195,18 @@ export default function App() {
                 <span className="tab-btn-text">Live Console</span>
               </div>
               <span className="tab-count-badge">{logs.length}</span>
+            </button>
+
+            <button
+              className={`tab-btn ${activeTab === 'settings' ? 'active' : ''}`}
+              onClick={() => setActiveTab('settings')}
+            >
+              <div className="tab-btn-content">
+                <span className="tab-btn-icon">
+                  <IconSettings size={17} />
+                </span>
+                <span className="tab-btn-text">Cài Đặt Hệ Thống</span>
+              </div>
             </button>
           </nav>
         </aside>
@@ -1170,6 +1282,10 @@ export default function App() {
                     <button className="btn btn-success" onClick={handleOpenMultiChromes}>
                       <IconPlay size={14} />
                       <span>Mở Chrome ({selectedAccountIds.length})</span>
+                    </button>
+                    <button className="btn btn-secondary" onClick={handleRealignChromes} title="Gom và sắp xếp lại các cửa sổ Chrome theo lưới">
+                      <IconMonitor size={14} />
+                      <span>Gom Cửa Sổ</span>
                     </button>
                     <button className="btn btn-secondary btn-danger" onClick={handleCloseAllBrowserWindows}>
                       <IconStop size={14} />
@@ -1838,7 +1954,35 @@ export default function App() {
                   )}
                 </div>
 
-                {/* Section 3: OmoCaptcha */}
+                {/* Section 3: Chrome Window & OmoCaptcha */}
+                <div
+                  style={{
+                    background: 'var(--bg-surface-subtle)',
+                    border: '1px solid var(--border-color)',
+                    padding: '0.65rem 0.85rem',
+                    borderRadius: 'var(--radius-sm)',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'space-between',
+                    fontSize: '0.8rem',
+                  }}
+                >
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '0.45rem' }}>
+                    <IconMonitor size={15} color="var(--primary)" />
+                    <span>
+                      Cửa sổ Chrome: <strong>{chromeWindowWidth}×{chromeWindowHeight}px</strong> ({chromeScaleFactor}x, tối đa {chromeGridColumns} cột)
+                    </span>
+                  </div>
+                  <button
+                    type="button"
+                    className="btn btn-secondary btn-sm"
+                    onClick={() => setActiveTab('settings')}
+                    style={{ fontSize: '0.75rem', padding: '0.2rem 0.6rem' }}
+                  >
+                    Đổi kích thước
+                  </button>
+                </div>
+
                 <div className="input-group">
                   <label className="input-label">
                     <span>OmoCaptcha API Key (Tự động giải TikTok Web Captcha)</span>
@@ -1852,8 +1996,8 @@ export default function App() {
                       value={omocaptchaApiKey}
                       onChange={(e) => setOmocaptchaApiKey(e.target.value)}
                     />
-                    <button type="button" className="btn btn-secondary" onClick={handleSaveOmocaptchaKey}>
-                      Lưu Key
+                    <button type="button" className="btn btn-secondary" onClick={handleSaveAllSettings} disabled={settingsBusy}>
+                      {settingsBusy ? 'Đang lưu...' : 'Lưu Key'}
                     </button>
                   </div>
                 </div>
@@ -2036,6 +2180,264 @@ export default function App() {
                     ))
                   )}
                 </div>
+              </div>
+            </div>
+          )}
+
+          {/* =========================================================================
+              TAB 5: SYSTEM SETTINGS
+              ========================================================================= */}
+          {activeTab === 'settings' && (
+            <div className="tab-content" style={{ display: 'flex', flexDirection: 'column', gap: '1.25rem', maxWidth: '980px' }}>
+              <div className="card">
+                <div className="card-header">
+                  <h3 className="card-title">
+                    <span className="card-icon">
+                      <IconMonitor size={18} />
+                    </span>
+                    Cấu Hình Hiển Thị Cửa Sổ Chrome (MKT TikPro Style)
+                  </h3>
+                  <span className="badge badge-info">Multi-Window Grid Engine</span>
+                </div>
+
+                <div className="card-body" style={{ display: 'flex', flexDirection: 'column', gap: '1.2rem', padding: '1.25rem' }}>
+                  {/* Row 1: Resolution Preset & Scale Factor */}
+                  <div style={{ display: 'grid', gridTemplateColumns: '1.5fr 1fr', gap: '1rem' }}>
+                    <div className="input-group">
+                      <label className="input-label">
+                        <span>Kích thước cửa sổ (Resolution Preset):</span>
+                        <span className="input-hint">Độ phân giải hiển thị cho từng Chrome</span>
+                      </label>
+                      <select
+                        className="custom-input"
+                        value={chromeWindowPreset}
+                        onChange={(e) => handlePresetChange(e.target.value)}
+                      >
+                        <option value="360x480">360x480 (Chuẩn Mobile MKT TikPro - Tối ưu nhất)</option>
+                        <option value="320x480">320x480 (Mobile nhỏ gọn)</option>
+                        <option value="360x640">360x640 (Mobile dọc 16:9)</option>
+                        <option value="475x300">475x300 (Mặc định Seeding Ngang)</option>
+                        <option value="640x360">640x360 (Ngang 16:9)</option>
+                        <option value="800x600">800x600 (SVGA chuẩn)</option>
+                        <option value="1280x720">1280x720 (HD 720p)</option>
+                        <option value="1920x1080">1920x1080 (Full HD 1080p)</option>
+                        <option value="custom">Tùy chỉnh (Nhập kích thước riêng)...</option>
+                      </select>
+                    </div>
+
+                    <div className="input-group">
+                      <label className="input-label">
+                        <span>Tỉ lệ Thu Phóng (Device Scale Factor):</span>
+                        <span className="input-hint">--force-device-scale-factor</span>
+                      </label>
+                      <select
+                        className="custom-input"
+                        value={chromeScaleFactor}
+                        onChange={(e) => setChromeScaleFactor(Number(e.target.value))}
+                      >
+                        <option value={0.5}>0.50x (Siêu nhỏ gọn - Tiết kiệm diện tích)</option>
+                        <option value={0.65}>0.65x (Chuẩn MKT TikPro - Cân đối)</option>
+                        <option value={0.75}>0.75x (Thu phóng vừa phải)</option>
+                        <option value={0.85}>0.85x (Gần chuẩn)</option>
+                        <option value={1.0}>1.00x (Kích thước gốc 100%)</option>
+                      </select>
+                    </div>
+                  </div>
+
+                  {/* Row 2: Custom Width, Height & Max Columns */}
+                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: '1rem' }}>
+                    <div className="input-group">
+                      <label className="input-label">
+                        <span>Chiều Rộng - Width (px):</span>
+                      </label>
+                      <input
+                        type="number"
+                        className="custom-input"
+                        min={200}
+                        max={3840}
+                        step={10}
+                        disabled={chromeWindowPreset !== 'custom'}
+                        value={chromeWindowWidth}
+                        onChange={(e) => {
+                          setChromeWindowWidth(Number(e.target.value));
+                          if (chromeWindowPreset !== 'custom') setChromeWindowPreset('custom');
+                        }}
+                      />
+                    </div>
+
+                    <div className="input-group">
+                      <label className="input-label">
+                        <span>Chiều Cao - Height (px):</span>
+                      </label>
+                      <input
+                        type="number"
+                        className="custom-input"
+                        min={150}
+                        max={2160}
+                        step={10}
+                        disabled={chromeWindowPreset !== 'custom'}
+                        value={chromeWindowHeight}
+                        onChange={(e) => {
+                          setChromeWindowHeight(Number(e.target.value));
+                          if (chromeWindowPreset !== 'custom') setChromeWindowPreset('custom');
+                        }}
+                      />
+                    </div>
+
+                    <div className="input-group">
+                      <label className="input-label">
+                        <span>Số Cột Tối Đa Trên Màn Hình:</span>
+                      </label>
+                      <select
+                        className="custom-input"
+                        value={chromeGridColumns}
+                        onChange={(e) => setChromeGridColumns(Number(e.target.value))}
+                      >
+                        <option value={1}>1 Cột</option>
+                        <option value={2}>2 Cột</option>
+                        <option value={3}>3 Cột</option>
+                        <option value={4}>4 Cột (Chuẩn màn hình máy tính)</option>
+                        <option value={5}>5 Cột</option>
+                        <option value={6}>6 Cột (Màn hình 2K/4K)</option>
+                        <option value={8}>8 Cột (Màn hình siêu rộng)</option>
+                      </select>
+                    </div>
+                  </div>
+
+                  {/* Preview Banner */}
+                  <div
+                    style={{
+                      background: 'var(--bg-surface-subtle)',
+                      border: '1px solid var(--border-color)',
+                      padding: '0.75rem 1rem',
+                      borderRadius: 'var(--radius-sm)',
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'space-between',
+                      fontSize: '0.82rem',
+                    }}
+                  >
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                      <span style={{ fontSize: '1rem' }}>📐</span>
+                      <span>
+                        Kích thước áp dụng: <strong>{chromeWindowWidth} × {chromeWindowHeight} px</strong> | Thu phóng: <strong>{chromeScaleFactor}x</strong> | Bố cục: tối đa <strong>{chromeGridColumns} cột/hàng</strong>
+                      </span>
+                    </div>
+                    <span className="badge badge-success">Sẵn sàng</span>
+                  </div>
+                </div>
+              </div>
+
+              {/* Card 2: Captcha Solving API */}
+              <div className="card">
+                <div className="card-header">
+                  <h3 className="card-title">
+                    <span className="card-icon">
+                      <IconKey size={18} />
+                    </span>
+                    Cấu Hình Tự Động Giải Captcha (OmoCaptcha)
+                  </h3>
+                </div>
+
+                <div className="card-body" style={{ display: 'flex', flexDirection: 'column', gap: '1rem', padding: '1.25rem' }}>
+                  <div className="input-group">
+                    <label className="input-label">
+                      <span>OmoCaptcha Client API Key:</span>
+                      <span className="input-hint">Tự động nhận diện Slider, Rotate, 3D TikTok Captcha</span>
+                    </label>
+                    <input
+                      type="password"
+                      className="custom-input"
+                      placeholder="Nhập OmoCaptcha Client Key..."
+                      value={omocaptchaApiKey}
+                      onChange={(e) => setOmocaptchaApiKey(e.target.value)}
+                    />
+                  </div>
+                </div>
+              </div>
+
+              {/* Card 3: Webhook & Server Sync */}
+              <div className="card">
+                <div className="card-header">
+                  <h3 className="card-title">
+                    <span className="card-icon">
+                      <IconGlobe size={18} />
+                    </span>
+                    Cấu Hình Webhook & Tự Động Hóa
+                  </h3>
+                </div>
+
+                <div className="card-body" style={{ display: 'flex', flexDirection: 'column', gap: '1rem', padding: '1.25rem' }}>
+                  <div style={{ display: 'grid', gridTemplateColumns: '1.5fr 1fr', gap: '1rem' }}>
+                    <div className="input-group">
+                      <label className="input-label">Webhook URL:</label>
+                      <input
+                        type="url"
+                        className="custom-input"
+                        placeholder="https://your-server.com/api/webhook"
+                        value={webhookUrl}
+                        onChange={(e) => setWebhookUrl(e.target.value)}
+                      />
+                    </div>
+
+                    <div className="input-group">
+                      <label className="input-label">Secret Key:</label>
+                      <input
+                        type="password"
+                        className="custom-input"
+                        placeholder="Webhook Secret Token..."
+                        value={webhookSecret}
+                        onChange={(e) => setWebhookSecret(e.target.value)}
+                      />
+                    </div>
+                  </div>
+
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
+                    <label style={{ display: 'flex', alignItems: 'center', gap: '0.45rem', cursor: 'pointer', fontSize: '0.85rem' }}>
+                      <input
+                        type="checkbox"
+                        checked={webhookEnabled}
+                        onChange={(e) => setWebhookEnabled(e.target.checked)}
+                      />
+                      <span>Kích hoạt Webhook gửi thông báo sự kiện</span>
+                    </label>
+                    <button
+                      type="button"
+                      className="btn btn-secondary btn-sm"
+                      onClick={handleTestWebhook}
+                      disabled={webhookBusy}
+                      style={{ marginLeft: 'auto' }}
+                    >
+                      {webhookBusy ? 'Đang test...' : 'Gửi Test Webhook'}
+                    </button>
+                  </div>
+                  {webhookMessage && (
+                    <div style={{ fontSize: '0.8rem', color: 'var(--primary)' }}>
+                      {webhookMessage}
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              {/* Save Bar */}
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '0.5rem 0' }}>
+                <div style={{ fontSize: '0.85rem', color: 'var(--text-muted)' }}>
+                  {settingsSaveMessage && (
+                    <span style={{ color: settingsSaveMessage.includes('thành công') ? '#10b981' : '#ef4444', fontWeight: 600 }}>
+                      {settingsSaveMessage}
+                    </span>
+                  )}
+                </div>
+                <button
+                  type="button"
+                  className="btn btn-primary"
+                  onClick={handleSaveAllSettings}
+                  disabled={settingsBusy}
+                  style={{ minWidth: '180px', padding: '0.7rem 1.4rem' }}
+                >
+                  <IconSettings size={16} />
+                  <span>{settingsBusy ? 'Đang lưu...' : 'Lưu Cài Đặt Hệ Thống'}</span>
+                </button>
               </div>
             </div>
           )}
