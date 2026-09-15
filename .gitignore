@@ -50,3 +50,8 @@ Desktop.ini
 coverage/
 tmp/
 temp/
+native-engine/bin/
+native-engine/obj/
+native-engine/publish/
+scripts/native-browser-checks/bin/
+scripts/native-browser-checks/obj/

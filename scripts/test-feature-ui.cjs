@@ -1,0 +1,13 @@
+const { spawnSync } = require('node:child_process');
+const path = require('node:path');
+const fs = require('node:fs');
+const root = path.resolve(__dirname, '..');
+require('./build-feature-fixture.cjs');
+const resultPath = path.join(root, 'tmp/feature-ui/result.json');
+if (fs.existsSync(resultPath)) fs.unlinkSync(resultPath);
+const result = spawnSync(require('electron'), ['scripts/feature-ui-checks.cjs'], { cwd: root, stdio: 'inherit', windowsHide: true });
+if (result.error) throw result.error;
+if (result.status !== 0 || !fs.existsSync(resultPath)) throw new Error('Electron UI checks did not complete.');
+const report = JSON.parse(fs.readFileSync(resultPath, 'utf8'));
+if (!report.success) throw new Error(report.message);
+console.log('UI fixture verified:', report.checks.join(', '));

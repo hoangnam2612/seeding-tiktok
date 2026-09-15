@@ -65,6 +65,13 @@ export class AccountsController {
   }
 
   // --- ACCOUNTS ---
+  @Put('proxies/:id')
+  updateProxy(@Param('id') id: string, @Body() dto: Partial<ProxyEntry>) {
+    const data = this.accountsService.updateProxy(id, dto);
+    return { success: !!data, data };
+  }
+
+  // --- ACCOUNTS ---
   @Get()
   getAccounts(@Query('categoryId') categoryId?: string) {
     return { success: true, data: this.accountsService.getAllAccounts(categoryId) };

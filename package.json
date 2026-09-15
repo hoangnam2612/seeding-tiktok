@@ -9,7 +9,7 @@
     "build:main": "tsc -p tsconfig.json",
     "build:renderer": "vite build --config src/renderer/vite.config.ts",
     "build": "npm run build:main && npm run build:renderer",
-    "dist:win": "npm run build && electron-builder --win nsis portable --x64",
+    "dist:win": "npm run build:engine && npm run build && electron-builder --win nsis portable --x64",
     "test:prod-smoke": "npm run build:main && node scripts/production-smoke.cjs",
     "dev:main": "tsc -w -p tsconfig.json",
     "dev:renderer": "vite --config src/renderer/vite.config.ts",
@@ -17,7 +17,18 @@
     "dev": "concurrently --kill-others \"npm run dev:main\" \"npm run dev:renderer\" \"electron .\"",
     "test:e2e": "electron scripts/e2e-like-comment.cjs",
     "test:e2e:real-tiktok": "electron scripts/e2e-real-tiktok.cjs",
-    "start": "electron ."
+    "start": "electron .",
+    "test:feature-ui": "node scripts/test-feature-ui.cjs",
+    "test:workflows": "npm run build:main && tsc scripts/workflow-checks.ts --target ES2022 --module commonjs --skipLibCheck --outDir tmp/workflow-tests && node tmp/workflow-tests/workflow-checks.js",
+    "test:packaged": "tsc scripts/packaged-workflow-checks.ts --target ES2022 --module commonjs --skipLibCheck --outDir tmp/packaged-tests && electron tmp/packaged-tests/packaged-workflow-checks.js",
+    "predev": "npm run build:engine && npm run build:main",
+    "prestart": "npm run build:engine && npm run build:main",
+    "predev:electron": "npm run build:engine && npm run build:main",
+    "test:parity": "node scripts/parity-regression-checks.cjs",
+    "build:engine": "node scripts/build-native-engine.cjs",
+    "test:native": "npm run build:main && node scripts/native-engine-checks.cjs",
+    "test:native:packaged": "node scripts/native-engine-checks.cjs --packaged",
+    "test:native:browser": "dotnet run --project scripts/native-browser-checks/NativeBrowserChecks.csproj"
   },
   "build": {
     "appId": "com.seedingtiktok.desktop",
@@ -52,17 +63,30 @@
       "oneClick": false,
       "allowToChangeInstallationDirectory": true,
       "perMachine": false
-    }
+    },
+    "extraResources": [
+      {
+        "from": "native-engine/publish",
+        "to": "native-engine",
+        "filter": [
+          "**/*"
+        ]
+      }
+    ]
   },
   "dependencies": {
     "@nestjs/common": "^10.3.0",
     "@nestjs/core": "^10.3.0",
     "@nestjs/platform-express": "^10.3.0",
+    "exceljs": "^4.4.0",
     "express": "^4.18.2",
+    "https-proxy-agent": "^7.0.6",
+    "playwright-core": "1.48.2",
     "react": "^18.2.0",
     "react-dom": "^18.2.0",
     "reflect-metadata": "^0.2.1",
-    "rxjs": "^7.8.1"
+    "rxjs": "^7.8.1",
+    "socks-proxy-agent": "^8.0.5"
   },
   "devDependencies": {
     "@types/express": "^4.17.21",

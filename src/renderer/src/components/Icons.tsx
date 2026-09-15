@@ -6,6 +6,20 @@ interface IconProps {
   color?: string;
 }
 
+export const IconUserEdit: React.FC<IconProps> = ({ size = 18, color = 'currentColor', className }) => (
+  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}>
+    <circle cx="9" cy="7" r="4" />
+    <path d="M3 21v-2a4 4 0 0 1 4-4h3M15 21l-3 1 1-3 6-6a1.4 1.4 0 0 1 2 2l-6 6ZM18 14l2 2" />
+  </svg>
+);
+
+export const IconSettings: React.FC<IconProps> = ({ size = 18, color = 'currentColor', className }) => (
+  <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}>
+    <path d="m9 3 .5-1h5l.5 3 2 1 2.5-1 2.5 4-2 2v2l2 2-2.5 4-2.5-1-2 1-.5 3h-5L9 19l-2-1-2.5 1L2 15l2-2v-2L2 9l2.5-4L7 6l2-1V3Z" />
+    <circle cx="12" cy="12" r="3" />
+  </svg>
+);
+
 export const IconSun: React.FC<IconProps> = ({ size = 18, color = 'currentColor', className }) => (
   <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}>
     <circle cx="12" cy="12" r="4" />

@@ -12,7 +12,8 @@ import { AppModule } from './nest/app.module';
 import { AccountsService } from './nest/accounts/accounts.service';
 import { AutomationService } from './nest/automation/automation.service';
 import { ClientAuthService } from './nest/client-auth/client-auth.service';
-import { setupAutomationIPC } from './automation-runner';
+
+import { setupWorkflowIPC } from './workflows/ipc';
 
 
 let mainWindow: BrowserWindow | null = null;
@@ -23,8 +24,8 @@ async function bootstrapNest() {
   nestApp.enableCors({
     origin: (origin, callback) => {
       const allowedOrigins = new Set([
-        'http://localhost:5173',
-        'http://127.0.0.1:5173',
+        'http://localhost:5174',
+        'http://127.0.0.1:5174',
         'file://',
         'null',
       ]);
@@ -45,6 +46,7 @@ async function bootstrapNest() {
   const accountsService = nestApp.get(AccountsService);
   const automationService = nestApp.get(AutomationService);
   const clientAuthService = nestApp.get(ClientAuthService);
+  setupWorkflowIPC(accountsService, automationService, clientAuthService, () => mainWindow);
 
   const reportCrash = (label: string, error: unknown) => {
     const details = error instanceof Error
@@ -61,17 +63,7 @@ async function bootstrapNest() {
     console.error('[Unhandled Rejection]', reason);
   });
 
-  setupAutomationIPC(
-    (log) => automationService.addLog(log),
-    (id, status) => accountsService.updateAccountStatus(id, status),
-    (id, update) => accountsService.updateAccount(id, update),
-    (state) => {
-      if (!mainWindow?.isDestroyed()) {
-        mainWindow?.webContents.send('seeding-state-changed', state);
-      }
-    },
-    () => clientAuthService.ensureLicensed()
-  );
+
 }
 
 function createWindow() {
@@ -80,12 +72,11 @@ function createWindow() {
     height: 800,
     minWidth: 900,
     minHeight: 650,
-    title: 'Electron + NestJS + React App',
+    title: 'Seeding TikTok',
     backgroundColor: '#0f172a',
     show: false,
-    ...(process.platform === 'darwin'
-      ? { titleBarStyle: 'hiddenInset' }
-      : { titleBarStyle: 'hidden', titleBarOverlay: { color: '#0b0f19', symbolColor: '#f8fafc', height: 35 } }),
+    // Keep the native title bar so every screen has a draggable window handle.
+    frame: true,
     webPreferences: {
       preload: path.join(__dirname, '../preload/index.js'),
       contextIsolation: true,
@@ -96,7 +87,7 @@ function createWindow() {
   const isDev = process.env.NODE_ENV === 'development' || !app.isPackaged;
 
   if (isDev) {
-    mainWindow.loadURL('http://localhost:5173');
+    mainWindow.loadURL('http://localhost:5174');
   } else {
     mainWindow.loadFile(path.join(__dirname, '../renderer/index.html'));
   }

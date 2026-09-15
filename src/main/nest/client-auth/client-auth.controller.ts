@@ -26,8 +26,18 @@ export class ClientAuthController {
   }
 
   @Post('login')
-  login(@Body() body: { username: string; password: string }) {
-    return this.clientAuthService.login(body.username || '', body.password || '');
+  async login(@Body() body: { username: string; password: string; remember?: boolean }) {
+    const result = await this.clientAuthService.login(body.username || '', body.password || '');
+    if (result.success) this.clientAuthService.rememberLogin(body.username, body.password, body.remember === true);
+    return result;
+  }
+
+  @Get('remembered-login')
+  rememberedLogin() { return { success: true, data: this.clientAuthService.getRememberedLogin() }; }
+
+  @Post('reset-password')
+  resetPassword(@Body() body: { email: string; otpCode: string; newPassword: string }) {
+    return this.clientAuthService.resetPassword({ email: body.email || '', otpCode: body.otpCode || '', newPassword: body.newPassword || '' });
   }
 
   @Post('me')
@@ -41,8 +51,8 @@ export class ClientAuthController {
   }
 
   @Post('logout')
-  logout() {
-    return { success: true, data: this.clientAuthService.logout() };
+  async logout() {
+    return { success: true, data: await this.clientAuthService.logout() };
   }
 
   @Post('telemetry')

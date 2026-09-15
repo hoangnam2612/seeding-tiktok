@@ -1,0 +1,84 @@
+.feature-workspace { width: 100%; min-width: 0; padding: 24px; color: var(--text-primary, #e2e8f0); }
+.feature-heading, .feature-toolbar { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
+.feature-heading { justify-content: space-between; margin-bottom: 20px; }
+.feature-workspace h2 { font-size: 24px; margin: 0 0 6px; }
+.feature-workspace h3 { font-size: 16px; margin: 0 0 10px; }
+.feature-workspace p, .feature-submit span { color: var(--text-secondary, #94a3b8); font-size: 13px; margin: 8px 0 16px; line-height: 1.6; }
+.feature-card { background: var(--bg-surface, #151b2a); border: 1px solid var(--border-color, #334155); border-radius: 12px; padding: 20px; margin-bottom: 18px; min-width: 0; }
+.feature-fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 18px 24px; }
+.feature-field { display: flex; flex-direction: column; gap: 8px; font-size: 13px; min-width: 0; }
+.feature-wide { grid-column: 1 / -1; }
+.feature-workspace input:not([type=checkbox]), .feature-workspace textarea, .feature-workspace select { background: var(--bg-input, #0f172a); color: inherit; border: 1px solid var(--border-color, #334155); padding: 10px 12px; border-radius: 7px; max-width: 100%; min-width: 0; font: inherit; }
+.feature-workspace textarea { resize: vertical; line-height: 1.6; }
+.feature-workspace input:focus, .feature-workspace textarea:focus { outline: 2px solid #6366f1; outline-offset: 1px; }
+.feature-workspace input[type=checkbox] { accent-color: #6366f1; width: 16px; height: 16px; }
+.feature-check { display: flex; align-items: center; gap: 9px; min-height: 36px; }
+.feature-workspace fieldset { border: 0; padding: 0; margin: 0; min-width: 0; }
+.feature-workspace fieldset:disabled { opacity: .65; }
+.feature-table-scroll { overflow: auto; max-height: 310px; margin-top: 12px; }
+.feature-workspace table { border-collapse: collapse; width: 100%; font-size: 12px; }
+.feature-workspace th { position: sticky; top: 0; background: var(--bg-surface, #151b2a); z-index: 1; text-align: left; }
+.feature-workspace td, .feature-workspace th { padding: 10px; border-bottom: 1px solid var(--border-color, #334155); }
+.feature-workspace td small { display: block; color: var(--text-secondary, #94a3b8); margin-top: 4px; }
+.feature-workspace .btn { white-space: normal; }
+.feature-workspace .feature-toolbar h3 { margin: 0; }
+.feature-submit { margin-top: 24px; }
+.feature-file-picker { margin-bottom: 24px; }
+.feature-notice { padding: 14px 16px; margin-bottom: 16px; background: #10b98118; border: 1px solid #10b98166; border-radius: 8px; overflow-wrap: anywhere; }
+.feature-error { background: #ef444418; border-color: #ef444477; }
+.feature-empty { text-align: center; padding: 20px; }
+.feature-log { max-height: 260px; overflow: auto; margin-top: 14px; font: 12px/1.8 Consolas, monospace; overflow-wrap: anywhere; }
+.feature-log time { color: var(--text-secondary, #94a3b8); }
+@media (max-width: 1100px) { .feature-workspace { padding: 14px; } .feature-fields { grid-template-columns: 1fr; } .feature-card { padding: 14px; } }
+
+
+/* Seeding: configuration on the left, account execution on the right. */
+.seeding-layout { display: grid; grid-template-columns: minmax(320px, 380px) minmax(0, 1fr); gap: 16px; align-items: stretch; min-height: calc(100vh - 180px); }
+.seeding-layout > .feature-card { margin-bottom: 0; padding: 18px; }
+.seeding-config .feature-fields { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px 12px; }
+.seeding-config .feature-field { font-size: 12px; gap: 6px; }
+.seeding-config textarea { min-height: 104px; }
+.seeding-modes { display: flex; gap: 8px; margin-bottom: 20px; padding-bottom: 16px; border-bottom: 1px solid var(--border-color); }
+.seeding-modes .btn { flex: 1; padding: 10px 8px; }
+.seeding-accounts { display: flex; flex-direction: column; }
+.seeding-account-toolbar { gap: 10px; padding-bottom: 16px; border-bottom: 1px solid var(--border-color); }
+.seeding-category { display: flex; align-items: center; gap: 8px; font-size: 12px; font-weight: 600; }
+.seeding-count { font-size: 12px; color: var(--text-secondary); }
+.seeding-count strong { color: var(--accent-primary, #6366f1); }
+.seeding-run-actions { display: flex; gap: 8px; margin-left: auto; }
+.seeding-search { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; margin-top: 16px; }
+.seeding-search h3 { margin: 0; }
+.seeding-search h3 small { color: var(--text-secondary); font-weight: 400; }
+.seeding-search input { width: 260px; }
+.seeding-accounts .feature-table-scroll { flex: 1; max-height: calc(100vh - 320px); min-height: 280px; }
+.seeding-accounts td { vertical-align: top; }
+.seeding-selected { background: #6366f10a; }
+.seeding-account-progress { min-width: 160px; max-width: 320px; overflow-wrap: anywhere; color: var(--text-secondary); }
+@media (max-width: 900px) {
+  .seeding-layout { grid-template-columns: minmax(280px, 320px) minmax(0, 1fr); }
+  .seeding-run-actions { margin-left: 0; }
+}
+@media (max-width: 700px) {
+  .seeding-layout { grid-template-columns: minmax(0, 1fr); }
+  .seeding-search input { width: 100%; }
+}
+.upload-queue { display: grid; gap: 12px; max-height: 420px; overflow-y: auto; margin-top: 12px; }
+.upload-queue-item { display: grid; gap: 8px; padding: 12px; border: 1px solid var(--border-color); border-radius: 8px; min-width: 0; }
+.upload-queue-item > strong { overflow-wrap: anywhere; font-size: 13px; }
+.upload-queue-item small { color: var(--text-secondary); font-size: 12px; }
+.upload-queue-item textarea { min-height: 64px; }
+.seeding-config .feature-file-picker > .feature-toolbar { gap: 8px; }
+.seeding-config .feature-file-picker h3 { width: 100%; }
+.seeding-config .feature-file-picker p { overflow-wrap: anywhere; }
+@media (min-width: 701px) {
+  .seeding-workspace { height: 100%; min-height: 0; display: flex; flex-direction: column; overflow: hidden; padding: 14px 18px; }
+  .seeding-workspace .feature-heading { flex: none; margin-bottom: 12px; }
+  .seeding-workspace .feature-heading h2 { font-size: 20px; margin-bottom: 2px; }
+  .seeding-workspace .feature-heading p { font-size: 12px; margin: 2px 0 0; }
+  .seeding-workspace > .feature-notice { flex: none; max-height: 80px; overflow: auto; }
+  .seeding-layout { flex: 1; height: auto; min-height: 0; grid-template-rows: minmax(0, 1fr); overflow: hidden; }
+  .seeding-config { overflow-y: auto; }
+  .seeding-accounts { min-height: 0; overflow: hidden; }
+  .seeding-accounts .feature-table-scroll { min-height: 0; max-height: none; }
+  .seeding-account-toolbar, .seeding-search { flex-shrink: 0; }
+}

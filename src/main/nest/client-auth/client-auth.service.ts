@@ -3,13 +3,13 @@ import * as crypto from 'crypto';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import { app } from 'electron';
+import { app, safeStorage } from 'electron';
 import { ensurePersistentDataDir } from '../../data-dir';
 import { decryptSecret, encryptSecret } from '../../secret-json';
 import { ClientAuthApiResult, ClientAuthState, PublicClientAuthState } from './client-auth.interface';
+import { loadAuthSettings } from './auth-settings';
 
-const AUTH_BASE_URL = 'https://voting-registry-produce.ngrok-free.dev';
-const APP_CODE = 'TIKMAX';
+const AUTH_BASE_URL = 'https://walker-unobsequious-vertebrally.ngrok-free.dev';
 const AUTH_STATE_FILE = 'client-auth.json';
 
 type RequestOptions = {
@@ -21,6 +21,7 @@ type RequestOptions = {
 
 @Injectable()
 export class ClientAuthService {
+  private readonly settings = loadAuthSettings(AUTH_BASE_URL);
   private dataDir = ensurePersistentDataDir();
   private authFilePath = path.join(this.dataDir, AUTH_STATE_FILE);
 
@@ -32,6 +33,21 @@ export class ClientAuthService {
   getPublicState(): PublicClientAuthState {
     const state = this.readState();
     return this.toPublicState(state);
+  }
+
+  async resetPassword(payload: { email: string; otpCode: string; newPassword: string }) {
+    return this.request('/api/auth/reset-password', { method: 'POST', body: { email: payload.email.trim(), otpCode: payload.otpCode.trim(), newPassword: payload.newPassword }, retryOnUnauthorized: false });
+  }
+
+  getRememberedLogin(): { username: string; password: string } | null {
+    this.ensurePaths();
+    try { const value = JSON.parse(fs.readFileSync(path.join(this.dataDir, 'remembered-login.json'), 'utf8')); return { username: value.username, password: safeStorage.decryptString(Buffer.from(value.encryptedPassword, 'base64')) }; } catch { return null; }
+  }
+  rememberLogin(username: string, password: string, remember: boolean) {
+    this.ensurePaths(); const file = path.join(this.dataDir, 'remembered-login.json');
+    if (!remember) { if (fs.existsSync(file)) fs.unlinkSync(file); return; }
+    if (!safeStorage.isEncryptionAvailable()) throw new Error('Không thể ghi nhớ mật khẩu an toàn trên máy này.');
+    fs.writeFileSync(file, JSON.stringify({ username, encryptedPassword: safeStorage.encryptString(password).toString('base64') }));
   }
 
   async bootstrap(): Promise<ClientAuthApiResult<{ auth: PublicClientAuthState; update: any }>> {
@@ -80,7 +96,7 @@ export class ClientAuthService {
         password,
         hwid: this.getMachineHwid(),
         deviceName: os.hostname(),
-        appCode: APP_CODE,
+        appCode: this.settings.appCode,
       },
       retryOnUnauthorized: false,
     });
@@ -88,11 +104,12 @@ export class ClientAuthService {
     if (!result.success || !result.data) return result;
 
     const data = result.data as any;
+    if (!data.accessToken || !data.refreshToken || data.appCode !== this.settings.appCode) return { success: false, message: 'Server trả về phiên không hợp lệ hoặc sai mã sản phẩm.' };
     this.saveState({
       accessToken: data.accessToken,
       refreshToken: data.refreshToken,
       user: data.user,
-      appCode: data.appCode || APP_CODE,
+      appCode: data.appCode || this.settings.appCode,
       expiresAt: data.expiresAt ?? null,
       isExpired: !!data.isExpired,
       lastCheckedAt: new Date().toISOString(),
@@ -120,7 +137,7 @@ export class ClientAuthService {
       accessToken = this.readState().accessToken;
     }
 
-    const result = await this.request(`/api/auth/me?appCode=${encodeURIComponent(APP_CODE)}`, {
+    const result = await this.request(`/api/auth/me?appCode=${encodeURIComponent(this.settings.appCode)}`, {
       method: 'GET',
       accessToken,
     });
@@ -128,11 +145,12 @@ export class ClientAuthService {
     if (!result.success || !result.data) return { ...result, data: this.getPublicState() };
 
     const data = result.data as any;
+    if (data.appCode !== this.settings.appCode) return { success: false, message: 'Phiên không thuộc sản phẩm này.' };
     if (data.user?.status && data.user.status !== 'active') {
       this.saveState({
         ...this.readState(),
         user: data.user,
-        appCode: data.appCode || APP_CODE,
+        appCode: data.appCode || this.settings.appCode,
         expiresAt: data.expiresAt ?? null,
         isExpired: true,
         lastCheckedAt: new Date().toISOString(),
@@ -147,7 +165,7 @@ export class ClientAuthService {
     this.saveState({
       ...this.readState(),
       user: data.user,
-      appCode: data.appCode || APP_CODE,
+      appCode: data.appCode || this.settings.appCode,
       expiresAt: data.expiresAt ?? null,
       isExpired: !!data.isExpired,
       lastCheckedAt: new Date().toISOString(),
@@ -169,7 +187,7 @@ export class ClientAuthService {
     const data = result.data as any;
     this.saveState({
       ...this.readState(),
-      appCode: data.appCode || APP_CODE,
+      appCode: data.appCode || this.settings.appCode,
       expiresAt: data.expiresAt ?? null,
       isExpired: false,
       lastCheckedAt: new Date().toISOString(),
@@ -243,14 +261,18 @@ export class ClientAuthService {
     });
   }
 
-  logout(): PublicClientAuthState {
-    this.saveState({});
+  async logout(): Promise<PublicClientAuthState> {
+    const state = this.readState();
+    try {
+      if (state.accessToken) await this.request('/api/auth/logout', { method: 'POST', accessToken: state.accessToken, body: { refreshToken: state.refreshToken }, retryOnUnauthorized: false });
+    } finally { this.saveState({}); }
     return this.getPublicState();
   }
 
   async ensureLicensed(): Promise<{ ok: boolean; message?: string; auth: PublicClientAuthState }> {
     const checked = await this.getMe();
     const auth = this.getPublicState();
+    if (!checked.success) return { ok: false, message: checked.message || 'Không xác minh được quyền sử dụng với server.', auth };
     if (!auth.authenticated) {
       return { ok: false, message: checked.message || 'Vui lòng đăng nhập để sử dụng phần mềm.', auth };
     }
@@ -287,7 +309,7 @@ export class ClientAuthService {
   }
 
   private async request(pathname: string, options: RequestOptions = {}): Promise<ClientAuthApiResult> {
-    const url = `${AUTH_BASE_URL}${pathname}`;
+    const url = `${this.settings.baseUrl}${pathname}`;
     const headers: Record<string, string> = {
       Accept: 'application/json',
       'Content-Type': 'application/json',
@@ -299,6 +321,7 @@ export class ClientAuthService {
       method: options.method || 'GET',
       headers,
       body: options.body ? JSON.stringify(options.body) : undefined,
+      signal: AbortSignal.timeout(25000),
     });
 
     let data: any = null;
@@ -374,7 +397,7 @@ export class ClientAuthService {
       licensed: !!state.accessToken && !!expiresAt && !isExpired && !blocked,
       blocked,
       user: state.user,
-      appCode: state.appCode || APP_CODE,
+      appCode: state.appCode || this.settings.appCode,
       expiresAt,
       isExpired,
       message: blocked ? 'Tài khoản đã bị khóa hoặc không còn hoạt động.' : undefined,

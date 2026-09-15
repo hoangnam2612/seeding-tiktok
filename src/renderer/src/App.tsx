@@ -4,6 +4,8 @@ import {
   IconUsers,
   IconGlobe,
   IconRocket,
+  IconUserEdit,
+  IconSettings,
   IconTerminal,
   IconPlus,
   IconUpload,
@@ -19,7 +21,8 @@ import {
   IconTiktok,
 } from './components/Icons';
 import { StatusBadge } from './components/StatusBadge';
-import { ThemeToggle } from './components/ThemeToggle';
+import { AccountMenu } from './components/AccountMenu';
+import { FeatureWorkspace, FeatureTab, featureTabs } from './components/FeatureWorkspace';
 import { AccountCategory, TikTokAccount, ProxyEntry, TaskLogItem, ClientAuthState } from './types';
 import { apiFetch, NEST_BASE_URL } from './utils/api';
 import { computeVisibleSelection, toggleSelectAllVisible, toggleSelectId } from './utils/selection';
@@ -27,6 +30,7 @@ import { computeVisibleSelection, toggleSelectAllVisible, toggleSelectId } from 
 declare global {
   interface Window {
     electronAPI?: {
+      workflows: (action: string, payload?: any) => Promise<any>;
       getDesktopMetadata: () => Promise<any>;
       getApiAuthToken: () => Promise<string>;
       focusWindow: () => Promise<any>;
@@ -79,7 +83,7 @@ export default function App() {
   };
 
   // Navigation State
-  const [activeTab, setActiveTab] = useState<'accounts' | 'proxies' | 'seeding' | 'logs'>('accounts');
+  const [activeTab, setActiveTab] = useState<'accounts' | 'proxies' | 'seeding' | 'logs' | FeatureTab>('accounts');
 
   // Server & System Status
   const [nestStatus, setNestStatus] = useState<any>(null);
@@ -98,7 +102,6 @@ export default function App() {
   const [statusFilter, setStatusFilter] = useState<string>('all');
 
   // Multi-Thread Execution State
-  const [maxThreads, setMaxThreads] = useState<number>(10);
   const [muteLoginBrowserAudio, setMuteLoginBrowserAudio] = useState<boolean>(true);
 
   // Modals State
@@ -175,10 +178,12 @@ export default function App() {
   const [isTaskExecuting, setIsTaskExecuting] = useState<boolean>(false);
   const [clientAuth, setClientAuth] = useState<ClientAuthState | null>(null);
   const [authLoading, setAuthLoading] = useState<boolean>(true);
-  const [authMode, setAuthMode] = useState<'login' | 'register'>('login');
+  const [authMode, setAuthMode] = useState<'login' | 'register' | 'reset'>('login');
   const [authUsername, setAuthUsername] = useState<string>('');
   const [authEmail, setAuthEmail] = useState<string>('');
   const [authPassword, setAuthPassword] = useState<string>('');
+  const [rememberLogin, setRememberLogin] = useState(false);
+  useEffect(() => { apiFetch(`${NEST_BASE_URL}/client-auth/remembered-login`).then(r => r.json()).then(r => { if (r.data) { setAuthUsername(r.data.username); setAuthPassword(r.data.password); setRememberLogin(true); } }).catch(() => {}); }, []);
   const [authOtpCode, setAuthOtpCode] = useState<string>('');
   const [licenseKeyCode, setLicenseKeyCode] = useState<string>('');
   const [authMessage, setAuthMessage] = useState<string>('');
@@ -518,7 +523,7 @@ export default function App() {
       const res = await apiFetch(`${NEST_BASE_URL}/client-auth/send-otp`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email: authEmail.trim(), purpose: 'register' }),
+        body: JSON.stringify({ email: authEmail.trim(), purpose: authMode === 'reset' ? 'forgot-password' : 'register' }),
       });
       const json = await res.json();
       setAuthMessage(json.message || (json.success ? 'Đã gửi OTP tới email.' : 'Gửi OTP thất bại.'));
@@ -529,6 +534,14 @@ export default function App() {
     }
   };
 
+  const handleResetPassword = async (e: React.FormEvent) => {
+    e.preventDefault(); setAuthBusy(true);
+    try {
+      const response = await apiFetch(`${NEST_BASE_URL}/client-auth/reset-password`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ email: authEmail, otpCode: authOtpCode, newPassword: authPassword }) });
+      const result = await response.json(); setAuthMessage(result.message || (result.success ? 'Đã đổi mật khẩu.' : 'Không đổi được mật khẩu.'));
+      if (result.success) { setAuthMode('login'); setAuthPassword(''); setAuthOtpCode(''); }
+    } catch { setAuthMessage('Không kết nối được server.'); } finally { setAuthBusy(false); }
+  };
   const handleClientRegister = async (e: React.FormEvent) => {
     e.preventDefault();
     setAuthBusy(true);
@@ -560,7 +573,7 @@ export default function App() {
       const res = await apiFetch(`${NEST_BASE_URL}/client-auth/login`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ username: authUsername, password: authPassword }),
+        body: JSON.stringify({ username: authUsername, password: authPassword, remember: rememberLogin }),
       });
       const json = await res.json();
       if (json.data) setClientAuth(json.data);
@@ -771,23 +784,21 @@ export default function App() {
     }
   };
 
-  const handleOpenSingleChrome = async (acc: TikTokAccount) => {
+  const openManagedChromes = async (accountIds: string[]) => {
     if (!(await requireValidLicense())) return;
-    if (window.electronAPI?.openAccountLoginWindow) {
-      await window.electronAPI.openAccountLoginWindow(
-        acc.id,
-        acc.username,
-        acc.cookie,
-        acc.proxy,
-        acc.proxyType,
-        acc.password,
-        acc.email,
-        acc.passMail,
-        acc.twoFactor,
-        muteLoginBrowserAudio
-      );
-    } else {
+    if (!window.electronAPI?.workflows) {
       alert('Chức năng mở Chrome yêu cầu ứng dụng Electron Desktop');
+      return;
+    }
+    try {
+      await window.electronAPI.workflows('start', {
+        command: 'login', accountIds, config: {},
+        browserOverrides: {
+          disableAudio: muteLoginBrowserAudio,
+        },
+      });
+    } catch (error) {
+      alert('Không mở được Chrome: ' + (error as Error).message);
     }
   };
 
@@ -796,31 +807,22 @@ export default function App() {
       alert('Vui lòng chọn ít nhất 1 tài khoản để mở Chrome!');
       return;
     }
-    if (!(await requireValidLicense())) return;
-
-    if (window.electronAPI?.openMultiAccountChromes) {
-      const selectedAccObjects = accounts.filter((a) => selectedAccountIds.includes(a.id));
-      const threadCount = maxThreads === 0 ? selectedAccountIds.length : maxThreads;
-      await window.electronAPI.openMultiAccountChromes(
-        selectedAccountIds,
-        threadCount,
-        selectedAccObjects,
-        muteLoginBrowserAudio
-      );
-    } else {
-      alert('Chức năng mở Chrome Đa Luồng yêu cầu ứng dụng Electron Desktop');
-    }
+    await openManagedChromes(selectedAccountIds);
   };
 
   const handleCloseAllBrowserWindows = async () => {
-    if (!window.electronAPI?.closeAllBrowserWindows) {
+    if (!window.electronAPI?.workflows) {
       alert('Chức năng đóng trình duyệt yêu cầu ứng dụng Electron Desktop');
       return;
     }
-
-    const result = await window.electronAPI.closeAllBrowserWindows();
-    setIsTaskExecuting(false);
-    alert(`Đã đóng ${result?.closedCount || 0} trình duyệt.`);
+    try {
+      await window.electronAPI.workflows('cancel');
+      await window.electronAPI.closeAllBrowserWindows?.();
+      setIsTaskExecuting(false);
+      alert('Đã đóng các trình duyệt.');
+    } catch (error) {
+      alert('Không đóng được trình duyệt: ' + (error as Error).message);
+    }
   };
 
   const handleClearLogs = async () => {
@@ -910,6 +912,7 @@ export default function App() {
             </button>
           </div>
 
+          <button className="btn btn-secondary" onClick={() => setAuthMode('reset')}>Quên mật khẩu</button>
           {authMode === 'login' ? (
             <form className="auth-form" onSubmit={handleClientLogin}>
               <label className="input-group">
@@ -920,17 +923,18 @@ export default function App() {
                 <span className="input-label">Mật khẩu</span>
                 <input className="custom-input" type="password" value={authPassword} onChange={(e) => setAuthPassword(e.target.value)} required />
               </label>
+              <label><input type="checkbox" checked={rememberLogin} onChange={e => setRememberLogin(e.target.checked)} /> Nhớ mật khẩu trên máy này</label>
               <button className="btn btn-primary" type="submit" disabled={authBusy}>
                 <IconKey size={15} />
                 <span>{authBusy ? 'Đang đăng nhập...' : 'Đăng nhập & khóa thiết bị'}</span>
               </button>
             </form>
           ) : (
-            <form className="auth-form" onSubmit={handleClientRegister}>
-              <label className="input-group">
+            <form className="auth-form" onSubmit={authMode === 'reset' ? handleResetPassword : handleClientRegister}>
+              {authMode !== 'reset' && <label className="input-group">
                 <span className="input-label">Username</span>
                 <input className="custom-input" value={authUsername} onChange={(e) => setAuthUsername(e.target.value)} required />
-              </label>
+              </label>}
               <label className="input-group">
                 <span className="input-label">Email</span>
                 <div className="auth-inline">
@@ -951,7 +955,7 @@ export default function App() {
               </label>
               <button className="btn btn-primary" type="submit" disabled={authBusy}>
                 <IconUsers size={15} />
-                <span>{authBusy ? 'Đang đăng ký...' : 'Tạo tài khoản'}</span>
+                <span>{authBusy ? 'Đang xử lý...' : authMode === 'reset' ? 'Đổi mật khẩu' : 'Tạo tài khoản'}</span>
               </button>
             </form>
           )}
@@ -1023,7 +1027,6 @@ export default function App() {
           <div className="brand-text">
             <div className="brand-title">
               TikTok Automation Studio
-              <span className="brand-tag">Ops Pro</span>
             </div>
             <div className="brand-subtitle">Hệ Thống Quản Lý Đa Luồng & Seeding Tự Động</div>
           </div>
@@ -1039,24 +1042,7 @@ export default function App() {
             <span>Proxy:</span>
             <span className="header-metric-val">{proxies.length}</span>
           </div>
-          <div className="header-metric license-metric">
-            <span>@{clientAuth.user?.username || 'user'}</span>
-            <span className="header-metric-val">{formatExpiry(clientAuth.expiresAt)}</span>
-          </div>
-
-          {/* Nest Status */}
-          <div className={`status-badge ${nestStatus ? 'online' : 'offline'}`}>
-            <span className="status-dot"></span>
-            <span>
-              {loadingStatus ? 'Đang kết nối...' : nestStatus ? 'Backend Active' : 'Backend Offline'}
-            </span>
-          </div>
-
-          {/* Theme Toggle Button */}
-          <button className="btn btn-secondary btn-sm" onClick={handleClientLogout}>
-            Đăng xuất
-          </button>
-          <ThemeToggle theme={theme} onToggle={toggleTheme} />
+          <AccountMenu username={clientAuth.user?.username || 'user'} expiry={formatExpiry(clientAuth.expiresAt)} theme={theme} onToggleTheme={toggleTheme} onLogout={handleClientLogout} />
         </div>
       </header>
 
@@ -1073,7 +1059,7 @@ export default function App() {
                 <span className="tab-btn-icon">
                   <IconUsers size={17} />
                 </span>
-                <span className="tab-btn-text">Quản Lý Tài Khoản</span>
+                <span className="tab-btn-text">Quản lý tài khoản</span>
               </div>
               <span className="tab-count-badge">{accounts.length}</span>
             </button>
@@ -1086,40 +1072,25 @@ export default function App() {
                 <span className="tab-btn-icon">
                   <IconGlobe size={17} />
                 </span>
-                <span className="tab-btn-text">Kho Proxy</span>
+                <span className="tab-btn-text">Quản lý proxy</span>
               </div>
               <span className="tab-count-badge">{proxies.length}</span>
             </button>
 
-            <button
-              className={`tab-btn ${activeTab === 'seeding' ? 'active' : ''}`}
-              onClick={() => setActiveTab('seeding')}
-            >
-              <div className="tab-btn-content">
-                <span className="tab-btn-icon">
-                  <IconRocket size={17} />
-                </span>
-                <span className="tab-btn-text">Seeding Automation</span>
-              </div>
-            </button>
-
-            <button
-              className={`tab-btn ${activeTab === 'logs' ? 'active' : ''}`}
-              onClick={() => setActiveTab('logs')}
-            >
-              <div className="tab-btn-content">
-                <span className="tab-btn-icon">
-                  <IconTerminal size={17} />
-                </span>
-                <span className="tab-btn-text">Live Console</span>
-              </div>
-              <span className="tab-count-badge">{logs.length}</span>
-            </button>
+            {featureTabs.map(([id, label]) => (
+              <button key={id} className={`tab-btn ${activeTab === id ? 'active' : ''}`} onClick={() => setActiveTab(id)}>
+                <div className="tab-btn-content">
+                  <span className="tab-btn-icon">{id === 'upload' ? <IconUpload size={17} /> : id === 'profile' ? <IconUserEdit size={17} /> : id === 'browser-settings' ? <IconSettings size={17} /> : <IconRocket size={17} />}</span>
+                  <span className="tab-btn-text">{label}</span>
+                </div>
+              </button>
+            ))}
           </nav>
         </aside>
 
         {/* Main Content Container */}
         <main className="main-container">
+          {featureTabs.some(([id]) => id === activeTab) && <FeatureWorkspace tab={activeTab as FeatureTab} />}
           {/* =========================================================================
               TAB 1: ACCOUNTS MANAGEMENT
               ========================================================================= */}
@@ -1197,28 +1168,6 @@ export default function App() {
 
                     <div className="toolbar-divider"></div>
 
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '0.35rem' }}>
-                      <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)', fontWeight: 600 }}>
-                        Luồng:
-                      </span>
-                      <select
-                        className="custom-input"
-                        style={{ width: '95px', padding: '0.35rem 0.5rem', fontSize: '0.78rem' }}
-                        value={maxThreads}
-                        onChange={(e) => setMaxThreads(Number(e.target.value))}
-                      >
-                        <option value={1}>1 Luồng</option>
-                        <option value={2}>2 Luồng</option>
-                        <option value={3}>3 Luồng</option>
-                        <option value={4}>4 Luồng</option>
-                        <option value={5}>5 Luồng</option>
-                        <option value={6}>6 Luồng</option>
-                        <option value={8}>8 Luồng</option>
-                        <option value={10}>10 Luồng</option>
-                        <option value={12}>12 Luồng</option>
-                        <option value={0}>Tất cả</option>
-                      </select>
-                    </div>
 
                     <label className="checkbox-label" style={{ fontSize: '0.78rem' }}>
                       <input
@@ -1264,7 +1213,7 @@ export default function App() {
                     {/* Status Filter */}
                     <select
                       className="custom-input"
-                      style={{ width: '135px', padding: '0.38rem 0.55rem', fontSize: '0.8rem' }}
+                      style={{ width: '160px', flexShrink: 0, padding: '0.38rem 0.55rem', fontSize: '0.8rem' }}
                       value={statusFilter}
                       onChange={(e) => setStatusFilter(e.target.value)}
                     >
@@ -1443,14 +1392,6 @@ export default function App() {
                               </td>
                               <td style={{ textAlign: 'right' }}>
                                 <div style={{ display: 'inline-flex', gap: '0.3rem' }}>
-                                  <button
-                                    className="btn btn-secondary btn-sm"
-                                    onClick={() => handleOpenSingleChrome(acc)}
-                                    title="Mở trình duyệt Chrome với tài khoản này"
-                                  >
-                                    <IconPlay size={12} />
-                                    <span>Chrome</span>
-                                  </button>
                                   <button
                                     className="btn-action-icon danger"
                                     onClick={() => handleDeleteAccount(acc.id)}

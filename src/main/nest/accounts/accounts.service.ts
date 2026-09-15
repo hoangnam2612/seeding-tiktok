@@ -15,6 +15,7 @@ const ACCOUNT_SECRET_FIELDS: Array<keyof TikTokAccount> = [
   'passMail',
   'twoFactor',
   'proxy',
+  'recoveryMail',
 ];
 const ACCOUNT_STATUSES: TikTokAccount['status'][] = [
   'live',
@@ -243,6 +244,12 @@ export class AccountsService implements OnModuleInit {
 
   private sanitizeAccountDto(dto: Partial<TikTokAccount>): Partial<TikTokAccount> {
     const clean: Partial<TikTokAccount> = {};
+    for (const key of ['uid', 'recoveryMail', 'userAgent', 'bio', 'avatarUrl', 'lastAction', 'lastActionAt', 'message'] as const) {
+      if (typeof dto[key] === 'string') clean[key] = dto[key];
+    }
+    for (const key of ['followerCount', 'followingCount', 'likesCount'] as const) {
+      if (Number.isFinite(dto[key]) && dto[key] >= 0) clean[key] = dto[key];
+    }
     if (typeof dto.username === 'string') clean.username = dto.username.replace(/^@/, '').trim();
     if (typeof dto.password === 'string') clean.password = dto.password;
     if (typeof dto.displayName === 'string') clean.displayName = dto.displayName.trim();
@@ -263,6 +270,22 @@ export class AccountsService implements OnModuleInit {
     return this.proxies;
   }
 
+  updateProxy(id: string, dto: Partial<ProxyEntry>): ProxyEntry | undefined {
+    const proxy = this.proxies.find(p => p.id === id);
+    if (!proxy) return undefined;
+    const oldValue = proxy.value;
+    if (typeof dto.value === 'string' && this.isValidProxyValue(dto.value)) proxy.value = dto.value.trim();
+    if (dto.proxyType && PROXY_TYPES.includes(dto.proxyType)) proxy.proxyType = dto.proxyType;
+    if (typeof dto.label === 'string') proxy.label = dto.label;
+    if (dto.status && ['untested', 'active', 'error'].includes(dto.status)) proxy.status = dto.status;
+    if (typeof dto.lastChecked === 'string') proxy.lastChecked = dto.lastChecked;
+    this.accounts.forEach(account => {
+      if (account.proxy === oldValue) { account.proxy = proxy.value; account.proxyType = proxy.proxyType; }
+    });
+    this.saveProxies(); this.saveAccounts();
+    return proxy;
+  }
+
   importProxies(
     rawText: string,
     proxyType: ProxyEntry['proxyType'] = 'http'
@@ -270,7 +293,15 @@ export class AccountsService implements OnModuleInit {
     const skippedLines: { line: number; rawText: string; reason: string }[] = [];
     let addedCount = 0;
     let skippedCount = 0;
-    const existingValues = new Set(this.proxies.map(p => p.value.trim()));
+    const identity = (value: string) => {
+      try {
+        const parts = value.split(':');
+        const text = !value.includes('://') && !value.includes('@') && parts.length === 4 ? encodeURIComponent(parts[2]) + ':' + encodeURIComponent(parts[3]) + '@' + parts[0] + ':' + parts[1] : value;
+        const url = new URL(text.includes('://') ? text : 'http://' + text);
+        return [url.hostname, url.port || '80', decodeURIComponent(url.username)].join('|').toLowerCase();
+      } catch { return value.trim().toLowerCase(); }
+    };
+    const existingValues = new Set(this.proxies.map(p => identity(p.value)));
 
     rawText.split(/\r?\n/).forEach((rawLine, idx) => {
       const value = rawLine.trim();
@@ -282,7 +313,7 @@ export class AccountsService implements OnModuleInit {
         return;
       }
 
-      if (existingValues.has(value)) {
+      if (existingValues.has(identity(value))) {
         skippedCount++;
         skippedLines.push({ line: idx + 1, rawText: rawLine, reason: 'Proxy đã tồn tại' });
         return;
@@ -296,7 +327,7 @@ export class AccountsService implements OnModuleInit {
         createdAt: new Date().toISOString(),
       };
       this.proxies.push(proxy);
-      existingValues.add(value);
+      existingValues.add(identity(value));
       addedCount++;
     });
 
@@ -393,6 +424,7 @@ export class AccountsService implements OnModuleInit {
   addAccount(dto: Partial<TikTokAccount>): TikTokAccount {
     const clean = this.sanitizeAccountDto(dto);
     const newAcc: TikTokAccount = {
+      ...clean,
       id: 'acc_' + Date.now() + '_' + Math.random().toString(36).substring(2, 7),
       username: clean.username || 'user_' + Date.now(),
       password: clean.password || '',

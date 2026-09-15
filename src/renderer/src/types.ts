@@ -17,6 +17,10 @@ export interface AccountCategory {
 export interface TikTokAccount {
   id: string;
   username: string;
+  uid?: string;
+  recoveryMail?: string;
+  userAgent?: string;
+  bio?: string;
   password?: string;
   displayName: string;
   notes?: string;
@@ -31,6 +35,10 @@ export interface TikTokAccount {
   avatarUrl?: string;
   followerCount?: number;
   followingCount?: number;
+  likesCount?: number;
+  lastAction?: string;
+  lastActionAt?: string;
+  message?: string;
   status: AccountStatus;
   lastChecked?: string;
   lastUsed?: string;
