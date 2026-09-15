@@ -1,0 +1,14 @@
+const assert = require('assert/strict'), Module = require('module');
+const original = Module._load;
+Module._load = function(id,...args) { if(id==='electron')return {app:{},safeStorage:{}};return original.call(this,id,...args); };
+const {AccountsService} = require('../dist/main/nest/accounts/accounts.service');
+const service = Object.create(AccountsService.prototype);
+service.accounts=[];service.saveAccounts=()=>{};
+let result=service.batchImportAccounts('demo|password|mail@outlook.com|mail:password\nother|password|sessionid=fixture|127.0.0.1:8080\ntotp|password|JBSWY3DPEHPK3PXP|127.0.0.1:8081');
+assert.equal(result.addedCount,3);assert.equal(result.skippedCount,0);
+assert.equal(service.accounts[0].email,'mail@outlook.com');assert.equal(service.accounts[0].passMail,'mail:password');assert.equal(service.accounts[0].proxy,'');assert.equal(service.accounts[0].twoFactor,'');
+assert.equal(service.accounts[1].cookie,'sessionid=fixture');assert.equal(service.accounts[2].twoFactor,'JBSWY3DPEHPK3PXP');
+service.accounts[0].cookie='sessionid=preserved';
+result=service.batchImportAccounts('demo|updated|new@outlook.com|newpass');
+assert.equal(result.updatedCount,1);assert.equal(service.accounts[0].cookie,'sessionid=preserved');assert.equal(service.accounts[0].passMail,'newpass');
+console.log('PASS user/pass/mail/passmail import and update; existing cookie and four-column proxy formats preserved.');

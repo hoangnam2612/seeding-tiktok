@@ -96,8 +96,8 @@ export class AccountsController {
 
   // --- BATCH & BULK OPERATIONS ---
   @Post('batch-import')
-  batchImport(@Body() body: { rawText: string; categoryId?: string; proxyType?: TikTokAccount['proxyType'] }) {
-    const result = this.accountsService.batchImportAccounts(body.rawText, body.categoryId, body.proxyType);
+  batchImport(@Body() body: { rawText: string; categoryId?: string; proxyType?: TikTokAccount['proxyType']; format?: string }) {
+    const result = this.accountsService.batchImportAccounts(body.rawText, body.categoryId, body.proxyType, body.format);
     return { success: true, data: result };
   }
 

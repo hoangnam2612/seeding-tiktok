@@ -1,4 +1,5 @@
-import { Injectable, OnModuleInit } from '@nestjs/common';
+import { BadRequestException, Injectable, OnModuleInit } from '@nestjs/common';
+import { parseImportFormat } from '../../../shared/account-import-format';
 import * as fs from 'fs';
 import * as path from 'path';
 import { TikTokAccount, AccountCategory, ProxyEntry } from './account.interface';
@@ -452,7 +453,8 @@ export class AccountsService implements OnModuleInit {
   batchImportAccounts(
     rawText: string,
     categoryId: string = 'cat_default',
-    defaultProxyType: TikTokAccount['proxyType'] = 'http'
+    defaultProxyType: TikTokAccount['proxyType'] = 'http',
+    format: string = 'auto'
   ): {
     addedCount: number;
     updatedCount: number;
@@ -460,6 +462,12 @@ export class AccountsService implements OnModuleInit {
     skippedLines: { line: number; rawText: string; reason: string }[];
     accounts: TikTokAccount[];
   } {
+    let formatColumns: ReturnType<typeof parseImportFormat>;
+    try {
+      formatColumns = parseImportFormat(format);
+    } catch (error) {
+      throw new BadRequestException(error instanceof Error ? error.message : 'Định dạng không hợp lệ.');
+    }
     const rawLines = rawText.split(/\r?\n/);
     let addedCount = 0;
     let updatedCount = 0;
@@ -502,7 +510,16 @@ export class AccountsService implements OnModuleInit {
 
       const hasValidCookie = (val?: string) => isCol3Cookie(val);
 
-      if (parts.length === 7) {
+      if (formatColumns) {
+        if (parts.length !== formatColumns.length) {
+          skippedCount++;
+          skippedLines.push({ line: i + 1, rawText: line, reason: `Cần ${formatColumns.length} cột theo định dạng đã chọn, nhận được ${parts.length} cột.` });
+          continue;
+        }
+        const values: Record<string, string> = {};
+        formatColumns.forEach((field, index) => { values[field] = parts[index]; });
+        ({ username = '', password = '', cookie = '', proxy = '', email = '', passMail = '', twoFactor = '' } = values);
+      } else if (parts.length === 7) {
         // User|Pass|Cookie|Email|PassMail|2FA|Proxy
         [username, password, cookie, email, passMail, twoFactor, proxy] = parts;
       } else if (parts.length === 6) {
@@ -522,7 +539,10 @@ export class AccountsService implements OnModuleInit {
           [username, password, twoFactor, email, passMail] = parts;
         }
       } else if (parts.length === 4) {
-        if (isCol3Cookie(parts[2])) {
+        if (/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(parts[2])) {
+          // User|Pass|Mail|PassMail
+          [username, password, email, passMail] = parts;
+        } else if (isCol3Cookie(parts[2])) {
           // User|Pass|Cookie|Proxy
           [username, password, cookie, proxy] = parts;
         } else {
@@ -587,7 +607,7 @@ export class AccountsService implements OnModuleInit {
       if (existingAcc) {
         if (password) existingAcc.password = password;
         if (cookie) existingAcc.cookie = cookie;
-        if (!cookie && parts.length >= 3 && !isCol3Cookie(parts[2])) existingAcc.cookie = '';
+        if (!formatColumns && !cookie && parts.length >= 3 && !isCol3Cookie(parts[2]) && !(parts.length === 4 && email)) existingAcc.cookie = '';
         if (proxy) existingAcc.proxy = proxy;
         if (email) existingAcc.email = email;
         if (passMail) existingAcc.passMail = passMail;

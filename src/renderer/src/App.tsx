@@ -1,4 +1,5 @@
 import React, { useEffect, useState, useRef, useMemo } from 'react';
+import { ACCOUNT_IMPORT_FORMATS, parseImportFormat } from '../../shared/account-import-format';
 import {
   IconUsers,
   IconGlobe,
@@ -147,6 +148,9 @@ export default function App() {
 
   // Batch Import Form
   const [batchRawText, setBatchRawText] = useState<string>('');
+  const [batchFormat, setBatchFormat] = useState('auto');
+  const [batchCustomFormat, setBatchCustomFormat] = useState('');
+  const [batchFormatError, setBatchFormatError] = useState('');
   const [batchCategory, setBatchCategory] = useState<string>('cat_default');
   const [batchProxyType, setBatchProxyType] = useState<TikTokAccount['proxyType']>('http');
   const [proxyImportText, setProxyImportText] = useState<string>('');
@@ -417,16 +421,31 @@ export default function App() {
     e.preventDefault();
     if (!batchRawText.trim()) return;
 
+    const format = batchFormat === 'custom' ? batchCustomFormat.trim() : batchFormat;
+    try {
+      parseImportFormat(format);
+      setBatchFormatError('');
+    } catch (error) {
+      setBatchFormatError(error instanceof Error ? error.message : 'Định dạng không hợp lệ.');
+      return;
+    }
+
     try {
       const res = await apiFetch(`${NEST_BASE_URL}/accounts/batch-import`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           rawText: batchRawText,
+          format,
           categoryId: batchCategory,
           proxyType: batchProxyType,
         }),
       });
+      if (!res.ok) {
+        const error = await res.json().catch(() => ({}));
+        setBatchFormatError(error.message || 'Lỗi nhập hàng loạt. Vui lòng thử lại.');
+        return;
+      }
       if (res.ok) {
         const json = await res.json();
         const { addedCount, updatedCount, skippedCount, skippedLines } = json.data || {};
@@ -2068,22 +2087,31 @@ export default function App() {
               style={{ display: 'flex', flexDirection: 'column', gap: '0.85rem' }}
             >
               <div className="input-group">
-                <label className="input-label">Định dạng hỗ trợ tự động:</label>
-                <div
-                  style={{
-                    fontSize: '0.75rem',
-                    color: 'var(--text-muted)',
-                    background: 'var(--bg-surface-subtle)',
-                    border: '1px solid var(--border-color)',
-                    padding: '0.5rem 0.75rem',
-                    borderRadius: 'var(--radius-sm)',
-                    fontFamily: 'var(--font-mono)',
-                    lineHeight: 1.5,
-                  }}
-                >
-                  User | User|Pass | User|Pass|2FA | User|Pass|Cookie | User|Pass|Cookie|Proxy |
-                  User|Pass|Cookie|Email|PassMail|2FA|Proxy
-                </div>
+                <label className="input-label" htmlFor="batch-import-format">Định dạng nhập tài khoản</label>
+                <select id="batch-import-format" className="custom-input" value={batchFormat}
+                  onChange={(e) => { setBatchFormat(e.target.value); setBatchFormatError(''); }}>
+                  <option value="auto">Tự động nhận diện (mặc định)</option>
+                  {ACCOUNT_IMPORT_FORMATS.map(format => <option key={format} value={format}>{format}</option>)}
+                  <option value="custom">Tùy chỉnh — tự nhập định dạng</option>
+                </select>
+                {batchFormat === 'custom' && (
+                  <>
+                    <label className="input-label" htmlFor="batch-custom-format">Thứ tự cột tùy chỉnh</label>
+                    <input id="batch-custom-format" className="custom-input" value={batchCustomFormat}
+                      onChange={(e) => { setBatchCustomFormat(e.target.value); setBatchFormatError(''); }}
+                      placeholder="Ví dụ: User | Pass | Mail | PassMail | Proxy" required />
+                    <small style={{ color: 'var(--text-secondary)' }}>
+                      Các cột: User, Pass, Mail (hoặc Email), PassMail, Cookie, 2FA, Proxy.
+                      Sắp xếp theo dữ liệu, phân cách bằng |. Phải có User; không lặp cột.
+                    </small>
+                  </>
+                )}
+                <small style={{ color: 'var(--text-secondary)' }}>
+                  {batchFormat === 'auto'
+                    ? 'Hệ thống nhận diện từng dòng. Nếu nhận diện chưa đúng, hãy chọn định dạng phù hợp hoặc tự nhập định dạng.'
+                    : 'Mỗi dòng phải có đúng số cột và thứ tự đã chọn, phân cách bằng |. Mail là email; PassMail là mật khẩu email.'}
+                </small>
+                {batchFormatError && <div role="alert" style={{ color: 'var(--danger, #ef4444)' }}>{batchFormatError}</div>}
               </div>
 
               <div className="input-group">
@@ -2094,7 +2122,7 @@ export default function App() {
                   ref={batchImportTextareaRef}
                   className="textarea-custom"
                   rows={6}
-                  placeholder={`user_01|pass123|sessionid=abc;...|1.2.3.4:8080\nuser_02|pass456|sessionid=def;...|5.6.7.8:8080`}
+                  placeholder={`user_01|mat_khau_tiktok|mail_01@outlook.com|mat_khau_email\nuser_02|mat_khau_tiktok|mail_02@gmail.com|mat_khau_email`}
                   value={batchRawText}
                   onChange={(e) => setBatchRawText(e.target.value)}
                   autoFocus
