@@ -87,12 +87,23 @@ export class NativeWorkflowService {
     let timer: ReturnType<typeof setTimeout> | undefined;
     try {
       await Promise.race([this.request('cancel').then(() => this.runPromise), new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error('Engine không phản hồi dừng.')), 15000); })]);
-    } catch (error) { await this.terminate(); throw error; }
+    } catch (error) {
+      // Cancellation is complete if the unresponsive engine's process tree was
+      // successfully stopped. Report a failure only when termination also fails.
+      await this.terminate();
+    }
     finally { clearTimeout(timer); }
   }
   private async terminate() {
     const child = this.child; if (!child?.pid) return;
-    await new Promise<void>(resolve => { const killer = spawn('taskkill', ['/PID', String(child.pid), '/T', '/F'], { windowsHide: true, stdio: 'ignore' }); killer.once('exit', () => resolve()); killer.once('error', () => { child.kill(); resolve(); }); });
+    await new Promise<void>((resolve, reject) => {
+      const killer = spawn('taskkill', ['/PID', String(child.pid), '/T', '/F'], { windowsHide: true, stdio: 'ignore' });
+      killer.once('exit', code => {
+        if (code === 0 || child.exitCode !== null) resolve();
+        else reject(new Error('Không đóng được engine và các trình duyệt của tác vụ.'));
+      });
+      killer.once('error', () => reject(new Error('Không chạy được lệnh đóng engine.')));
+    });
   }
   async shutdown() { try { await this.cancel(); } finally { this.child?.stdin.end(); } }
 }

@@ -7,10 +7,10 @@ export function encryptSecret(value?: string): string {
   if (value.startsWith(SECRET_PREFIX)) return value;
 
   try {
-    if (!safeStorage.isEncryptionAvailable()) return value;
+    if (!safeStorage.isEncryptionAvailable()) throw new Error('Không có mã hóa hệ điều hành.');
     return SECRET_PREFIX + safeStorage.encryptString(value).toString('base64');
   } catch {
-    return value;
+    throw new Error('Không thể mã hóa dữ liệu bí mật. Chưa lưu thay đổi; kiểm tra tài khoản Windows và thử lại.');
   }
 }
 
@@ -19,10 +19,10 @@ export function decryptSecret(value?: string): string {
   if (!value.startsWith(SECRET_PREFIX)) return value;
 
   try {
-    if (!safeStorage.isEncryptionAvailable()) return value;
+    if (!safeStorage.isEncryptionAvailable()) throw new Error('Không có mã hóa hệ điều hành.');
     return safeStorage.decryptString(Buffer.from(value.slice(SECRET_PREFIX.length), 'base64'));
   } catch {
-    return value;
+    throw new Error('Không giải mã được dữ liệu bí mật. Hãy mở bằng tài khoản Windows đã lưu dữ liệu.');
   }
 }
 

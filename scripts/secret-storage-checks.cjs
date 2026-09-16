@@ -1,0 +1,13 @@
+const assert = require('assert/strict'), Module = require('module');
+const safeStorage = { isEncryptionAvailable: () => false, encryptString: value => Buffer.from(value), decryptString: value => value.toString() };
+const original = Module._load;
+Module._load = function(id,...args) { return id === 'electron' ? {safeStorage} : original.call(this,id,...args); };
+const {encryptSecret,decryptSecret}=require('../dist/main/secret-json');
+assert.throws(()=>encryptSecret('fixture-password'),/Không thể mã hóa/);
+assert.throws(()=>decryptSecret('enc:v1:Zml4dHVyZQ=='),/Không giải mã/);
+safeStorage.isEncryptionAvailable=()=>true;
+assert.equal(decryptSecret(encryptSecret('fixture-password')),'fixture-password');
+safeStorage.encryptString=()=>{throw new Error('fixture OS failure')};
+assert.throws(()=>encryptSecret('fixture-password'),/Không thể mã hóa/);
+assert.equal(decryptSecret('legacy-fixture'),'legacy-fixture');
+console.log('PASS secret storage: encryption failure refuses plaintext writes; decrypt failure explicit; legacy migration readable.');

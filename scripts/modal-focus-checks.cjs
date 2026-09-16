@@ -1,0 +1,22 @@
+const assert = require('assert/strict');
+const { focusModalInput } = require('../dist/renderer/src/modal-focus');
+const frames = new Map();
+let nextFrame = 0;
+global.requestAnimationFrame = callback => { frames.set(++nextFrame, callback); return nextFrame; };
+global.cancelAnimationFrame = id => frames.delete(id);
+const flush = () => { for (const [id, callback] of frames) { frames.delete(id); callback(); } };
+const tick = () => new Promise(resolve => setImmediate(resolve));
+(async () => {
+  let focused = 0, resolveNative;
+  const input = { focus: () => focused++ };
+  focusModalInput(() => input, () => new Promise(resolve => { resolveNative = resolve; }));
+  await tick(); flush(); assert.equal(focused, 0, 'Do not focus before native recovery completes');
+  resolveNative(); await tick(); flush(); assert.equal(focused, 1);
+  const cancel = focusModalInput(() => input, () => new Promise(resolve => { resolveNative = resolve; }));
+  cancel(); resolveNative(); await tick(); flush(); assert.equal(focused, 1, 'Closed modal must not steal focus');
+  const cancelFrame = focusModalInput(() => input, async () => {});
+  await tick(); cancelFrame(); flush(); assert.equal(focused, 1);
+  focusModalInput(() => input, async () => { throw Error('No native bridge'); });
+  await tick(); flush(); assert.equal(focused, 2, 'Browser fallback still focuses input');
+  console.log('PASS modal focus: waits for native recovery, cancels closed modals, handles bridge failures.');
+})().catch(error => { console.error(error); process.exitCode = 1; });

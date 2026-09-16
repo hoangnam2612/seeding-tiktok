@@ -1,4 +1,5 @@
 import React, { useEffect, useState, useRef, useMemo } from 'react';
+import { focusModalInput } from './modal-focus';
 import { ACCOUNT_IMPORT_FORMATS, parseImportFormat } from '../../shared/account-import-format';
 import {
   IconUsers,
@@ -116,25 +117,19 @@ export default function App() {
 
   useEffect(() => {
     if (isSingleAddOpen) {
-      window.electronAPI?.focusWindow();
-      const timer = setTimeout(() => singleAddInputRef.current?.focus(), 50);
-      return () => clearTimeout(timer);
+      return focusModalInput(() => singleAddInputRef.current, async () => window.electronAPI?.focusWindow());
     }
   }, [isSingleAddOpen]);
 
   useEffect(() => {
     if (isBatchImportOpen) {
-      window.electronAPI?.focusWindow();
-      const timer = setTimeout(() => batchImportTextareaRef.current?.focus(), 50);
-      return () => clearTimeout(timer);
+      return focusModalInput(() => batchImportTextareaRef.current, async () => window.electronAPI?.focusWindow());
     }
   }, [isBatchImportOpen]);
 
   useEffect(() => {
     if (isAddCategoryOpen) {
-      window.electronAPI?.focusWindow();
-      const timer = setTimeout(() => addCategoryInputRef.current?.focus(), 50);
-      return () => clearTimeout(timer);
+      return focusModalInput(() => addCategoryInputRef.current, async () => window.electronAPI?.focusWindow());
     }
   }, [isAddCategoryOpen]);
 
@@ -2042,7 +2037,7 @@ export default function App() {
                       onChange={(e) => { setBatchCustomFormat(e.target.value); setBatchFormatError(''); }}
                       placeholder="Ví dụ: User | Pass | Mail | PassMail | Proxy" required />
                     <small style={{ color: 'var(--text-secondary)' }}>
-                      Các cột: User, Pass, Mail (hoặc Email), PassMail, Cookie, 2FA, Proxy.
+                      Các cột: User, Pass, Mail (hoặc Email), PassMail (hoặc PASS MAIL), Cookie, 2FA, Proxy, refresh_token, client_id, RecoveryMail (email khôi phục).
                       Sắp xếp theo dữ liệu, phân cách bằng |. Phải có User; không lặp cột.
                     </small>
                   </>

@@ -1,5 +1,5 @@
 import 'reflect-metadata';
-import { app, BrowserWindow, ipcMain } from 'electron';
+import { app, BrowserWindow, ipcMain, dialog } from 'electron';
 import * as path from 'path';
 import { Request, Response, NextFunction } from 'express';
 import { API_AUTH_HEADER, getApiAuthToken, isValidApiAuthToken } from './api-auth';
@@ -17,6 +17,12 @@ import { setupWorkflowIPC } from './workflows/ipc';
 
 
 let mainWindow: BrowserWindow | null = null;
+const ownsInstance = app.requestSingleInstanceLock();
+if (!ownsInstance) app.quit();
+app.on('second-instance', () => {
+  if (mainWindow?.isMinimized()) mainWindow.restore();
+  mainWindow?.show(); mainWindow?.focus();
+});
 const NEST_PORT = 3000;
 
 async function bootstrapNest() {
@@ -84,7 +90,7 @@ function createWindow() {
     },
   });
 
-  const isDev = process.env.NODE_ENV === 'development' || !app.isPackaged;
+  const isDev = !app.isPackaged;
 
   if (isDev) {
     mainWindow.loadURL('http://localhost:5174');
@@ -108,10 +114,13 @@ function createWindow() {
 }
 
 app.whenReady().then(async () => {
+  if (!ownsInstance) return;
   try {
     await bootstrapNest();
   } catch (error) {
     console.error('[NestJS Boot Error]', error);
+    dialog.showErrorBox('Không khởi động được ứng dụng', 'Không mở được dịch vụ nội bộ. Hãy đóng phiên ứng dụng cũ, kiểm tra cổng 3000 và thử lại.');
+    app.quit(); return;
   }
   createWindow();
 });
@@ -130,9 +139,13 @@ app.on('activate', () => {
 
 // IPC Handler to focus main window
 ipcMain.handle('focus-window', () => {
-  if (mainWindow) {
+  if (mainWindow && !mainWindow.isDestroyed()) {
     if (mainWindow.isMinimized()) mainWindow.restore();
     mainWindow.focus();
+    // Reset Chromium's native input focus, which can remain stale on Windows
+    // even while the BrowserWindow reports focused (e.g. after a native dialog).
+    mainWindow.blurWebView();
+    mainWindow.focusOnWebView();
     mainWindow.webContents.focus();
   }
   return true;

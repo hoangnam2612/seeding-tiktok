@@ -31,6 +31,8 @@ export interface TikTokAccount {
   token?: string;
   email?: string;
   passMail?: string;
+  refreshToken?: string;
+  clientId?: string;
   twoFactor?: string;
   proxy?: string;
   proxyType?: 'none' | 'http' | 'socks5' | 'tmproxy' | 'tinsoft';

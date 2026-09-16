@@ -26,6 +26,19 @@ public class ChromeService
     private static readonly ConcurrentDictionary<int, string> _activeProfilePaths = new();
     private static readonly SemaphoreSlim _driverInstallerLock = new(1, 1);
     private static string? _cachedChromeDriverPath;
+    private static readonly object ProcessSnapshotLock = new();
+    private static string[] _chromeCommandLines = Array.Empty<string>();
+    private static long _snapshotAt;
+
+    private static void QuitDriverBounded(IWebDriver driver)
+    {
+        // A busy WebDriver may block Quit until its command timeout expires.
+        var cleanup = Task.Run(() => {
+            try { driver.Quit(); } catch { }
+            try { driver.Dispose(); } catch { }
+        });
+        cleanup.Wait(TimeSpan.FromSeconds(2));
+    }
 
     public static string DefaultProfilesFolder => Path.Combine((Environment.GetEnvironmentVariable("TIKTOK_ENGINE_DATA") ?? Application.StartupPath), "ChromeProfiles");
 
@@ -294,16 +307,16 @@ public class ChromeService
     private static bool HasChromeProcessForProfile(string profilePath)
     {
         string normalizedProfilePath = NormalizePathForCommandLine(profilePath);
-        foreach (var processInfo in GetProcessInfos("chrome.exe"))
+        lock (ProcessSnapshotLock)
         {
-            string commandLine = NormalizePathForCommandLine(processInfo.CommandLine);
-            if (commandLine.Contains(normalizedProfilePath, StringComparison.OrdinalIgnoreCase))
+            if (_snapshotAt == 0 || Environment.TickCount64 - _snapshotAt > 1000)
             {
-                return true;
+                _chromeCommandLines = GetProcessInfos("chrome.exe")
+                    .Select(info => NormalizePathForCommandLine(info.CommandLine)).ToArray();
+                _snapshotAt = Environment.TickCount64;
             }
+            return _chromeCommandLines.Any(commandLine => commandLine.Contains(normalizedProfilePath, StringComparison.OrdinalIgnoreCase));
         }
-
-        return false;
     }
 
     private static void CleanupExternallyClosedChrome(int accountId, IWebDriver? knownDriver)
@@ -364,12 +377,7 @@ public class ChromeService
 
         if (_activeDrivers.TryRemove(accountId, out var driver))
         {
-            try
-            {
-                driver.Quit();
-                driver.Dispose();
-            }
-            catch { }
+            QuitDriverBounded(driver);
         }
 
         if (_activeProcesses.TryRemove(accountId, out var process))
@@ -396,26 +404,9 @@ public class ChromeService
 
     public static void CloseAllChrome()
     {
-        var profilePaths = _activeProfilePaths.Values.ToList();
-
-        foreach (var accountId in _activeDrivers.Keys)
-        {
-            CloseAccountChrome(accountId);
-        }
-
-        foreach (var accountId in _activeProcesses.Keys)
-        {
-            CloseAccountChrome(accountId);
-        }
-
-        foreach (var profilePath in profilePaths)
-        {
-            KillChromeProcessesByProfilePath(profilePath);
-        }
-
-        KillChromeProcessesByProfilePath(DefaultProfilesFolder);
+        var accountIds = _activeDrivers.Keys.Concat(_activeProcesses.Keys).Concat(_activeProfilePaths.Keys).Distinct().ToArray();
+        Parallel.ForEach(accountIds, new ParallelOptions { MaxDegreeOfParallelism = 8 }, CloseAccountChrome);
         KillChildChromeDriverProcesses(Process.GetCurrentProcess().Id);
-        // Only close tracked account profiles; do not scan unrelated orphan drivers.
     }
 
     private static void KillChromeProcessesByProfilePath(string profilePath)
@@ -488,11 +479,6 @@ public class ChromeService
     {
         try
         {
-            foreach (var child in GetChildProcessInfos(processId))
-            {
-                KillProcessTree(child.ProcessId);
-            }
-
             var process = Process.GetProcessById(processId);
             if (!process.HasExited)
             {

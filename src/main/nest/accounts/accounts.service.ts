@@ -13,6 +13,7 @@ const ACCOUNT_SECRET_FIELDS: Array<keyof TikTokAccount> = [
   'token',
   'email',
   'passMail',
+  'refreshToken',
   'twoFactor',
   'proxy',
   'recoveryMail',
@@ -259,6 +260,8 @@ export class AccountsService implements OnModuleInit {
     if (typeof dto.token === 'string') clean.token = dto.token;
     if (typeof dto.email === 'string') clean.email = dto.email.trim();
     if (typeof dto.passMail === 'string') clean.passMail = dto.passMail;
+    if (typeof dto.refreshToken === 'string') clean.refreshToken = dto.refreshToken;
+    if (typeof dto.clientId === 'string') clean.clientId = dto.clientId;
     if (typeof dto.twoFactor === 'string') clean.twoFactor = dto.twoFactor.trim();
     if (typeof dto.proxy === 'string') clean.proxy = dto.proxy.trim();
     if (dto.proxyType && PROXY_TYPES.includes(dto.proxyType)) clean.proxyType = dto.proxyType;
@@ -518,15 +521,18 @@ export class AccountsService implements OnModuleInit {
       let proxy = '';
       let email = '';
       let passMail = '';
+      let refreshToken = '';
+      let clientId = '';
+      let recoveryMail = '';
       let twoFactor = '';
 
-      // Reject lines with > 7 columns
-      if (parts.length > 7) {
+      // Automatic detection supports up to eight columns; explicit formats define their own count.
+      if (!formatColumns && parts.length > 8) {
         skippedCount++;
         skippedLines.push({
           line: i + 1,
           rawText: line,
-          reason: `Dòng có quá 7 cột (${parts.length} cột)`,
+          reason: `Dòng có quá 8 cột (${parts.length} cột)`,
         });
         continue;
       }
@@ -550,12 +556,22 @@ export class AccountsService implements OnModuleInit {
         }
         const values: Record<string, string> = {};
         formatColumns.forEach((field, index) => { values[field] = parts[index]; });
-        ({ username = '', password = '', cookie = '', proxy = '', email = '', passMail = '', twoFactor = '' } = values);
+        ({ username = '', password = '', cookie = '', proxy = '', email = '', passMail = '', twoFactor = '', refreshToken = '', clientId = '', recoveryMail = '' } = values);
+      } else if (parts.length === 8) {
+        const isEmail = (value: string) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value);
+        if (!isEmail(parts[2]) || (parts[6] && !isEmail(parts[6])) || (parts[7] && !isCol3Cookie(parts[7]))) {
+          skippedCount++;
+          skippedLines.push({ line: i + 1, rawText: line, reason: 'Không nhận diện được định dạng 8 cột. Hãy chọn định dạng hoặc nhập định dạng tùy chỉnh.' });
+          continue;
+        }
+        [username, password, email, passMail, refreshToken, clientId, recoveryMail, cookie] = parts;
       } else if (parts.length === 7) {
         // User|Pass|Cookie|Email|PassMail|2FA|Proxy
         [username, password, cookie, email, passMail, twoFactor, proxy] = parts;
       } else if (parts.length === 6) {
-        if (isCol3Cookie(parts[2])) {
+        if (/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(parts[2])) {
+          [username, password, email, passMail, refreshToken, clientId] = parts;
+        } else if (isCol3Cookie(parts[2])) {
           // User|Pass|Cookie|Email|PassMail|2FA
           [username, password, cookie, email, passMail, twoFactor] = parts;
         } else {
@@ -624,6 +640,12 @@ export class AccountsService implements OnModuleInit {
         continue;
       }
 
+      if (recoveryMail && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(recoveryMail)) {
+        skippedCount++;
+        skippedLines.push({ line: i + 1, rawText: line, reason: 'Email khôi phục không hợp lệ.' });
+        continue;
+      }
+
       // Validate proxy format if provided (must contain : like ip:port or user:pass@ip:port)
       if (proxy && !proxy.includes(':')) {
         skippedCount++;
@@ -639,10 +661,13 @@ export class AccountsService implements OnModuleInit {
       if (existingAcc) {
         if (password) existingAcc.password = password;
         if (cookie) existingAcc.cookie = cookie;
-        if (!formatColumns && !cookie && parts.length >= 3 && !isCol3Cookie(parts[2]) && !(parts.length === 4 && email)) existingAcc.cookie = '';
+        if (!formatColumns && !cookie && parts.length >= 3 && !isCol3Cookie(parts[2]) && !([4, 6, 8].includes(parts.length) && email && !twoFactor)) existingAcc.cookie = '';
         if (proxy) existingAcc.proxy = proxy;
         if (email) existingAcc.email = email;
         if (passMail) existingAcc.passMail = passMail;
+        if (refreshToken) existingAcc.refreshToken = refreshToken;
+        if (clientId) existingAcc.clientId = clientId;
+        if (recoveryMail) existingAcc.recoveryMail = recoveryMail;
         if (twoFactor) existingAcc.twoFactor = twoFactor;
         if (categoryId) existingAcc.categoryId = categoryId;
         existingAcc.status = hasValidCookie(existingAcc.cookie) ? 'authenticated' : 'unauthenticated';
@@ -659,6 +684,9 @@ export class AccountsService implements OnModuleInit {
           proxyType: defaultProxyType || 'http',
           email,
           passMail,
+          refreshToken,
+          clientId,
+          recoveryMail,
           twoFactor,
           status: hasValidCookie(cookie) ? 'authenticated' : 'unauthenticated',
           createdAt: new Date().toISOString(),
